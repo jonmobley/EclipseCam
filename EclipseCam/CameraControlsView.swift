@@ -269,22 +269,6 @@ struct CameraControlsView: View {
             .cornerRadius(20)
     }
     
-    private var macroModeIndicatorView: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "camera.macro")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundColor(.yellow)
-            
-            Text("MACRO")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.yellow)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Color.black.opacity(0.6))
-        .cornerRadius(20)
-    }
-    
     private var cameraSwitchButton: some View {
         Button(action: {
             if !cameraManager.isRecording {
