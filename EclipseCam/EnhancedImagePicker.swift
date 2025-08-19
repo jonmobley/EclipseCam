@@ -7,17 +7,37 @@
 
 import SwiftUI
 import PhotosUI
+import Combine
 
 struct EnhancedImagePicker: View {
     @Binding var selectedImage: UIImage?
+    @Binding var selectedVideoURL: URL?
     @Environment(\.dismiss) private var dismiss
     @StateObject private var mediaHistory = MediaHistoryManager.shared
     @State private var selectedTab = 0
-    @State private var showingPhotoPicker = false
+    @State private var showingMediaPicker = false
     @State private var isFromHistory = false // Track if selection is from history
+    @State private var tempVideoURL: URL? // Temporary state to trigger onChange
     
     // Callback to notify parent about selection source
     var onImageSelected: ((UIImage, Bool) -> Void)? = nil // (image, isFromHistory)
+    var onVideoSelected: ((URL, Bool) -> Void)? = nil // (videoURL, isFromHistory)
+    
+    // Convenience initializer for image-only mode (backward compatibility)
+    init(selectedImage: Binding<UIImage?>, onImageSelected: ((UIImage, Bool) -> Void)? = nil) {
+        self._selectedImage = selectedImage
+        self._selectedVideoURL = .constant(nil)
+        self.onImageSelected = onImageSelected
+        self.onVideoSelected = nil
+    }
+    
+    // Full initializer for image and video support
+    init(selectedImage: Binding<UIImage?>, selectedVideoURL: Binding<URL?>, onImageSelected: ((UIImage, Bool) -> Void)? = nil, onVideoSelected: ((URL, Bool) -> Void)? = nil) {
+        self._selectedImage = selectedImage
+        self._selectedVideoURL = selectedVideoURL
+        self.onImageSelected = onImageSelected
+        self.onVideoSelected = onVideoSelected
+    }
     
     var body: some View {
         NavigationView {
@@ -37,8 +57,16 @@ struct EnhancedImagePicker: View {
                         historyItems: mediaHistory.historyItems,
                         onImageSelected: { image in
                             selectedImage = image
+                            selectedVideoURL = nil
                             isFromHistory = true // Mark as selected from history
                             onImageSelected?(image, true) // Notify parent: from history
+                            dismiss()
+                        },
+                        onVideoSelected: { videoURL in
+                            selectedVideoURL = videoURL
+                            selectedImage = nil
+                            isFromHistory = true // Mark as selected from history
+                            onVideoSelected?(videoURL, true) // Notify parent: from history
                             dismiss()
                         }
                     )
@@ -55,8 +83,12 @@ struct EnhancedImagePicker: View {
                             .font(.title2)
                             .foregroundColor(.primary)
                         
+                        Text("Choose photos or videos")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                        
                         Button("Open Camera Roll") {
-                            showingPhotoPicker = true
+                            showingMediaPicker = true
                         }
                         .buttonStyle(.borderedProminent)
                         
@@ -64,7 +96,7 @@ struct EnhancedImagePicker: View {
                     }
                 }
             }
-            .navigationTitle("Select Image")
+            .navigationTitle("Select Media")
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarBackButtonHidden(true)
             .toolbar {
@@ -85,14 +117,85 @@ struct EnhancedImagePicker: View {
                 }
             }
         }
-        .sheet(isPresented: $showingPhotoPicker) {
-            ImagePicker(selectedImage: $selectedImage)
+        .sheet(isPresented: $showingMediaPicker) {
+            MediaPicker(
+                selectedImage: $selectedImage, 
+                selectedVideoURL: $selectedVideoURL,
+                onVideoSelected: { videoURL in
+                    print("🎬 EnhancedImagePicker: onVideoSelected called with: \(videoURL.absoluteString)")
+                    print("🎬 EnhancedImagePicker: Setting tempVideoURL to trigger onChange")
+                    
+                    // Set temporary state to trigger onChange
+                    tempVideoURL = videoURL
+                },
+                onImageSelected: { image in
+                    print("🎬 EnhancedImagePicker: onImageSelected called")
+                    print("🎬 EnhancedImagePicker: Calling parent onImageSelected directly")
+                    onImageSelected?(image, false) // Call parent directly
+                    dismiss() // Dismiss the picker
+                }
+            )
+            .onAppear {
+                // Reset the flag when opening camera roll picker
+                isFromHistory = false
+                print("🎬 MediaPicker opened, reset isFromHistory to false")
+            }
+        }
+        .onAppear {
+            print("🎬 EnhancedImagePicker appeared - selectedVideoURL: \(selectedVideoURL?.absoluteString ?? "nil")")
+        }
+        .onReceive(Just(selectedVideoURL)) { url in
+            print("🎬 EnhancedImagePicker received selectedVideoURL update: \(url?.absoluteString ?? "nil")")
         }
         .onChange(of: selectedImage) { oldImage, newImage in
+            print("🎬 selectedImage onChange: old=\(oldImage != nil ? "image" : "nil"), new=\(newImage != nil ? "image" : "nil"), isFromHistory=\(isFromHistory)")
+            
             if let image = newImage, !isFromHistory {
                 // Only add to history when image is selected from camera roll, not from history
+                print("🎬 Adding image to history and notifying parent")
                 mediaHistory.addToHistory(image)
                 onImageSelected?(image, false) // Notify parent: from camera roll
+                dismiss()
+            } else if newImage == nil && oldImage != nil {
+                print("🎬 selectedImage was cleared (set to nil) - not calling onImageSelected")
+            }
+        }
+        .onChange(of: tempVideoURL) { oldURL, newURL in
+            print("🎬 TempVideo URL changed: \(newURL?.absoluteString ?? "nil")")
+            
+            if let videoURL = newURL {
+                print("🎬 Processing temp video URL, setting selectedVideoURL")
+                selectedVideoURL = videoURL
+                selectedImage = nil
+                print("🎬 selectedVideoURL set to: \(selectedVideoURL?.absoluteString ?? "nil")")
+                dismiss()
+            }
+        }
+        .onChange(of: selectedVideoURL) { oldURL, newURL in
+            print("🎬 Video URL changed: \(newURL?.absoluteString ?? "nil"), isFromHistory: \(isFromHistory)")
+            
+            if let videoURL = newURL, !isFromHistory {
+                print("🎬 Starting video import from camera roll...")
+                
+                // Only add to history when video is selected from camera roll, not from history
+                mediaHistory.addToHistory(videoURL) { result in
+                    print("🎬 Video import completed with result: \(result)")
+                    DispatchQueue.main.async {
+                        switch result {
+                        case .success(let localVideoURL):
+                            print("✅ Video imported successfully to: \(localVideoURL.path)")
+                            self.onVideoSelected?(localVideoURL, false) // Use local URL for playback
+                            self.dismiss()
+                        case .failure(let error):
+                            print("❌ Video import failed: \(error.localizedDescription)")
+                            // TODO: Show error alert to user
+                            // For now, still dismiss but video won't be in history
+                            self.dismiss()
+                        }
+                    }
+                }
+            } else if newURL != nil {
+                print("🎬 Video selected from history, dismissing immediately")
                 dismiss()
             }
         }
@@ -102,6 +205,7 @@ struct EnhancedImagePicker: View {
 struct HistoryGridView: View {
     let historyItems: [MediaHistoryItem]
     let onImageSelected: (UIImage) -> Void
+    let onVideoSelected: ((URL) -> Void)?
     
     private let columns = [
         GridItem(.adaptive(minimum: 100, maximum: 150), spacing: 8)
@@ -120,7 +224,7 @@ struct HistoryGridView: View {
                     .font(.title2)
                     .foregroundColor(.primary)
                 
-                Text("Images you select will appear here for quick access")
+                Text("Photos and videos you select will appear here for quick access")
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -135,7 +239,9 @@ struct HistoryGridView: View {
                         HistoryThumbnailView(
                             item: item,
                             onTap: {
-                                if let image = item.image {
+                                if item.isVideo, let videoURL = item.videoURL {
+                                    onVideoSelected?(videoURL)
+                                } else if let image = item.image {
                                     onImageSelected(image)
                                 }
                             },
@@ -174,9 +280,41 @@ struct HistoryThumbnailView: View {
                         .fill(Color.gray.opacity(0.3))
                         .frame(width: 100, height: 100)
                         .overlay(
-                            Image(systemName: "photo")
+                            Image(systemName: item.isVideo ? "video" : "photo")
                                 .foregroundColor(.gray)
                         )
+                }
+                
+                // Video indicator overlay
+                if item.isVideo {
+                    VStack {
+                        Spacer()
+                        HStack {
+                            // Play icon
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 16))
+                                .foregroundColor(.white)
+                                .background(Color.black.opacity(0.7))
+                                .clipShape(Circle())
+                                .padding(.leading, 8)
+                            
+                            Spacer()
+                            
+                            // Duration
+                            if let duration = item.formattedDuration {
+                                Text(duration)
+                                    .font(.caption2)
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.black.opacity(0.7))
+                                    .cornerRadius(4)
+                                    .padding(.trailing, 8)
+                            }
+                        }
+                        .padding(.bottom, 8)
+                    }
                 }
                 
                 // Delete button overlay

@@ -323,6 +323,8 @@ struct CameraView: View {
     
     @StateObject private var cameraManager = CameraManager()
     @State private var selectedImage: UIImage?
+    @State private var selectedVideoURL: URL?
+    @State private var selectedMediaItem: MediaHistoryItem?
     @State private var showingImagePicker = false
     @State private var showingFullscreenImage = false
     @State private var showingCamera = true // Track whether to show camera or image
@@ -358,6 +360,10 @@ struct CameraView: View {
                                 .padding(.horizontal, 40)
                         }
                     }
+                } else if let videoURL = selectedVideoURL {
+                    // Show selected video with seamless looping
+                    SeamlessVideoPlayer(videoURL: videoURL, aspectFit: false)
+                        .ignoresSafeArea()
                 } else if let image = selectedImage {
                     // Show selected image
                     Image(uiImage: image)
@@ -419,25 +425,146 @@ struct CameraView: View {
         .sheet(isPresented: $showingImagePicker) {
             EnhancedImagePicker(
                 selectedImage: $selectedImage,
+                selectedVideoURL: $selectedVideoURL,
                 onImageSelected: { image, isFromHistory in
+                    print("🎬 CameraView: onImageSelected called with image=\(image != nil ? "image" : "nil"), isFromHistory=\(isFromHistory)")
+                    
+                    // Clear video selection when image is selected
+                    print("🎬 CameraView: Clearing selectedVideoURL (was: \(selectedVideoURL?.absoluteString ?? "nil"))")
+                    selectedVideoURL = nil
+                    selectedMediaItem = nil
+                    showingCamera = false
+                    
                     // Only add to history if it's from camera roll, not from history
                     if !isFromHistory {
                         MediaHistoryManager.shared.addToHistory(image)
                     }
+                },
+                onVideoSelected: { videoURL, isFromHistory in
+                    print("🎬 CameraView: onVideoSelected called with: \(videoURL.absoluteString)")
+                    print("🎬 CameraView: isFromHistory: \(isFromHistory)")
+                    
+                    // Clear image selection when video is selected
+                    selectedImage = nil
+                    selectedMediaItem = nil
+                    showingCamera = false
+                    
+                    // Video import is handled in EnhancedImagePicker
+                    // Just store the URL for playback
+                    print("🎬 CameraView: Setting selectedVideoURL to: \(videoURL.absoluteString)")
+                    selectedVideoURL = videoURL
+                    print("🎬 CameraView: selectedVideoURL is now: \(selectedVideoURL?.absoluteString ?? "nil")")
                 }
             )
         }
         .fullScreenCover(isPresented: $showingFullscreenImage) {
-            if let image = selectedImage {
-                FullscreenImageView(image: image, onDismiss: {
-                    showingFullscreenImage = false
-                }, onBack: onBack)
+            Group {
+                if let videoURL = selectedVideoURL {
+                    FullscreenVideoView(videoURL: videoURL, onDismiss: {
+                        showingFullscreenImage = false
+                    }, onBack: onBack)
+                } else if let image = selectedImage {
+                    FullscreenMediaView(image: image, onDismiss: {
+                        showingFullscreenImage = false
+                    }, onBack: onBack)
+                }
             }
         }
     }
 }
 
-// MARK: - Image Picker
+// MARK: - Media Picker
+struct MediaPicker: UIViewControllerRepresentable {
+    @Binding var selectedImage: UIImage?
+    @Binding var selectedVideoURL: URL?
+    @Environment(\.dismiss) private var dismiss
+    
+    var onVideoSelected: ((URL) -> Void)? = nil
+    var onImageSelected: ((UIImage) -> Void)? = nil
+    
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.delegate = context.coordinator
+        picker.sourceType = .photoLibrary
+        picker.allowsEditing = false
+        picker.mediaTypes = ["public.image", "public.movie"] // Support both images and videos
+        picker.videoQuality = .typeHigh
+        return picker
+    }
+    
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: MediaPicker
+        
+        init(_ parent: MediaPicker) {
+            self.parent = parent
+        }
+        
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            print("🎬 MediaPicker: Media selected, info keys: \(info.keys)")
+            
+            // Check media type first
+            if let mediaType = info[.mediaType] as? String {
+                print("🎬 MediaPicker: Media type: \(mediaType)")
+                
+                if mediaType == "public.movie", let videoURL = info[.mediaURL] as? URL {
+                    print("🎬 MediaPicker: Video selected: \(videoURL.absoluteString)")
+                    print("🎬 MediaPicker: This is a temporary file, copying immediately...")
+                    
+                    // Copy the temporary file to a more permanent location immediately
+                    do {
+                        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                        let tempDirectory = documentsPath.appendingPathComponent("TempVideos")
+                        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+                        
+                        let tempFileName = "temp_\(UUID().uuidString).mov"
+                        let tempDestination = tempDirectory.appendingPathComponent(tempFileName)
+                        
+                        try FileManager.default.copyItem(at: videoURL, to: tempDestination)
+                        print("🎬 MediaPicker: Video copied to temp location: \(tempDestination.path)")
+                        
+                        // Use completion handler instead of binding
+                        DispatchQueue.main.async {
+                            print("🎬 MediaPicker: Calling onVideoSelected with: \(tempDestination.absoluteString)")
+                            self.parent.onVideoSelected?(tempDestination)
+                            print("🎬 MediaPicker: onVideoSelected called")
+                        }
+                    } catch {
+                        print("🎬 MediaPicker: Failed to copy temp video: \(error)")
+                        // Fallback to original URL (might not work)
+                        DispatchQueue.main.async {
+                            self.parent.selectedVideoURL = videoURL
+                            self.parent.selectedImage = nil
+                        }
+                    }
+                }
+                // Check if it's an image
+                else if mediaType == "public.image", let image = info[.originalImage] as? UIImage {
+                    print("🎬 MediaPicker: Image selected")
+                    parent.onImageSelected?(image)
+                }
+                else {
+                    print("🎬 MediaPicker: Unsupported media type: \(mediaType)")
+                }
+            }
+            else {
+                print("🎬 MediaPicker: No media type found in info")
+            }
+            parent.dismiss()
+        }
+        
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
+        }
+    }
+}
+
+// MARK: - Legacy Image Picker (for backward compatibility)
 struct ImagePicker: UIViewControllerRepresentable {
     @Binding var selectedImage: UIImage?
     @Environment(\.dismiss) private var dismiss
@@ -476,7 +603,207 @@ struct ImagePicker: UIViewControllerRepresentable {
     }
 }
 
-// MARK: - Fullscreen Image View
+// MARK: - Seamless Video Player
+struct SeamlessVideoPlayer: UIViewRepresentable {
+    let videoURL: URL
+    let aspectFit: Bool
+    
+    init(videoURL: URL, aspectFit: Bool = true) {
+        self.videoURL = videoURL
+        self.aspectFit = aspectFit
+    }
+    
+    func makeUIView(context: Context) -> UIView {
+        let containerView = UIView()
+        containerView.backgroundColor = UIColor.clear
+        
+        // Create AVPlayer
+        let player = AVPlayer(url: videoURL)
+        let playerLayer = AVPlayerLayer(player: player)
+        
+        // Configure player layer
+        playerLayer.videoGravity = aspectFit ? .resizeAspect : .resizeAspectFill
+        playerLayer.frame = containerView.bounds
+        containerView.layer.addSublayer(playerLayer)
+        
+        // Store player and layer for coordinator
+        context.coordinator.player = player
+        context.coordinator.playerLayer = playerLayer
+        
+        // Configure for seamless looping
+        player.actionAtItemEnd = .none
+        
+        // Add notification for looping
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(context.coordinator.playerDidFinishPlaying),
+            name: .AVPlayerItemDidPlayToEndTime,
+            object: player.currentItem
+        )
+        
+        // Start playing
+        player.play()
+        
+        return containerView
+    }
+    
+    func updateUIView(_ uiView: UIView, context: Context) {
+        // Update player layer frame when view size changes
+        context.coordinator.playerLayer?.frame = uiView.bounds
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+    
+    class Coordinator: NSObject {
+        var player: AVPlayer?
+        var playerLayer: AVPlayerLayer?
+        
+        @objc func playerDidFinishPlaying() {
+            // Seamlessly loop the video
+            player?.seek(to: CMTime.zero)
+            player?.play()
+        }
+        
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+            player?.pause()
+        }
+    }
+}
+
+// MARK: - Fullscreen Media View
+struct FullscreenMediaView: View {
+    let mediaItem: MediaHistoryItem?
+    let image: UIImage?
+    let videoURL: URL?
+    let onDismiss: () -> Void
+    let onBack: () -> Void
+    
+    // Initialize with MediaHistoryItem
+    init(mediaItem: MediaHistoryItem, onDismiss: @escaping () -> Void, onBack: @escaping () -> Void) {
+        self.mediaItem = mediaItem
+        self.image = mediaItem.image
+        self.videoURL = mediaItem.videoURL
+        self.onDismiss = onDismiss
+        self.onBack = onBack
+    }
+    
+    // Initialize with UIImage (backward compatibility)
+    init(image: UIImage, onDismiss: @escaping () -> Void, onBack: @escaping () -> Void) {
+        self.mediaItem = nil
+        self.image = image
+        self.videoURL = nil
+        self.onDismiss = onDismiss
+        self.onBack = onBack
+    }
+    
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            
+            if let videoURL = videoURL {
+                // Video playback
+                SeamlessVideoPlayer(videoURL: videoURL, aspectFit: true)
+                    .ignoresSafeArea()
+            } else if let image = image {
+                // Image display
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .ignoresSafeArea()
+            }
+            
+            // Controls overlay
+            VStack {
+                HStack {
+                    Button(action: onBack) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "chevron.left")
+                                .font(.title2)
+                            Text("Back")
+                                .font(.headline)
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.6))
+                        .cornerRadius(20)
+                    }
+                    
+                    Spacer()
+                    
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark")
+                            .font(.title2)
+                            .foregroundColor(.white)
+                            .padding(12)
+                            .background(Color.black.opacity(0.6))
+                            .clipShape(Circle())
+                    }
+                }
+                .padding()
+                
+                Spacer()
+            }
+        }
+        .statusBarHidden(true)
+    }
+}
+
+// MARK: - Fullscreen Video View
+struct FullscreenVideoView: View {
+    let videoURL: URL
+    let onDismiss: () -> Void
+    let onBack: () -> Void
+    
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            
+            // Video playback
+            SeamlessVideoPlayer(videoURL: videoURL, aspectFit: true)
+                .ignoresSafeArea()
+            
+            // Controls overlay
+            VStack {
+                HStack {
+                    Button(action: onBack) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "chevron.left")
+                                .font(.title2)
+                            Text("Back")
+                                .font(.headline)
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.6))
+                        .cornerRadius(20)
+                    }
+                    
+                    Spacer()
+                    
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark")
+                            .font(.title2)
+                            .foregroundColor(.white)
+                            .padding(12)
+                            .background(Color.black.opacity(0.6))
+                            .clipShape(Circle())
+                    }
+                }
+                .padding()
+                
+                Spacer()
+            }
+        }
+        .statusBarHidden(true)
+    }
+}
+
+// MARK: - Fullscreen Image View (Legacy - for backward compatibility)
 struct FullscreenImageView: View {
     let image: UIImage
     let onDismiss: () -> Void
