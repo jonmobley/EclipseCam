@@ -63,7 +63,6 @@ struct ContentView: View {
                     OrientationManager.shared.setOrientation(UIInterfaceOrientation.portrait)
                 })
                 .preferredColorScheme(.dark)
-                .persistentSystemOverlays(.hidden) // Hide home indicator for fullscreen experience
             } else if showCameraView {
                 CameraView(orientationMode: selectedMode, preSelectedImage: preSelectedImage) {
                     // Back button callback  
@@ -72,7 +71,6 @@ struct ContentView: View {
                     OrientationManager.shared.setOrientation(UIInterfaceOrientation.portrait)
                 }
                 .preferredColorScheme(.dark)
-                .persistentSystemOverlays(.hidden) // Hide home indicator for fullscreen experience
             } else {
                 MainMenuView(
                     selectedMode: $selectedMode,
@@ -94,6 +92,7 @@ struct ContentView: View {
         }
         .navigationBarHidden(true)
         .navigationViewStyle(StackNavigationViewStyle())
+        .homeIndicatorHidden(showCameraView || showFullscreenImage)
         .sheet(isPresented: $showingMainImagePicker) {
             EnhancedImagePicker(
                 selectedImage: $preSelectedImage,
@@ -346,10 +345,7 @@ struct CameraView: View {
                         // Live camera preview
                         CameraPreview(
                             session: cameraManager.session, 
-                            orientationMode: orientationMode,
-                            onTapToFocus: { point in
-                                cameraManager.focusAt(point: point)
-                            }
+                            orientationMode: orientationMode
                         )
                             .ignoresSafeArea()
                     } else {
@@ -417,8 +413,7 @@ struct CameraView: View {
                     }
             )
         }
-        .statusBarHidden(true) // Hide status bar for clean streaming appearance
-        .persistentSystemOverlays(.hidden) // Hide home indicator for fullscreen experience
+        .fullscreenMode()
         .onAppear {
             // Initialize with pre-selected image if available
             if selectedImage == nil {
@@ -759,8 +754,7 @@ struct FullscreenMediaView: View {
                 Spacer()
             }
         }
-        .statusBarHidden(true)
-        .persistentSystemOverlays(.hidden) // Hide home indicator for fullscreen experience
+        .fullscreenMode()
     }
 }
 
@@ -811,8 +805,7 @@ struct FullscreenVideoView: View {
                 Spacer()
             }
         }
-        .statusBarHidden(true)
-        .persistentSystemOverlays(.hidden) // Hide home indicator for fullscreen experience
+        .fullscreenMode()
     }
 }
 
@@ -866,8 +859,7 @@ struct FullscreenImageView: View {
                         }
                 )
         }
-        .statusBarHidden(true)
-        .persistentSystemOverlays(.hidden) // Hide home indicator for fullscreen experience
+        .fullscreenMode()
     }
 }
 
