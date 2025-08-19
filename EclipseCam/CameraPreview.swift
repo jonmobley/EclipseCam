@@ -11,24 +11,28 @@ import AVFoundation
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
     let orientationMode: OrientationMode
+    let onTapToFocus: ((CGPoint) -> Void)?
     
     func makeUIView(context: Context) -> VideoPreviewView {
         let view = VideoPreviewView()
         view.backgroundColor = UIColor.black
         view.session = session
         view.orientationMode = orientationMode
+        view.onTapToFocus = onTapToFocus
         return view
     }
     
     func updateUIView(_ uiView: VideoPreviewView, context: Context) {
         uiView.session = session
         uiView.orientationMode = orientationMode
+        uiView.onTapToFocus = onTapToFocus
     }
 }
 
 class VideoPreviewView: UIView {
     private var retryCount = 0
     private let maxRetries = 50 // Maximum number of retries
+    var onTapToFocus: ((CGPoint) -> Void)?
     
     var session: AVCaptureSession? {
         didSet {
@@ -54,6 +58,67 @@ class VideoPreviewView: UIView {
     
     var videoPreviewLayer: AVCaptureVideoPreviewLayer {
         return layer as! AVCaptureVideoPreviewLayer
+    }
+    
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupTapGesture()
+    }
+    
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupTapGesture()
+    }
+    
+    private func setupTapGesture() {
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        addGestureRecognizer(tapGesture)
+    }
+    
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        let tapPoint = gesture.location(in: self)
+        
+        // Convert tap point to camera coordinate system (0,0 to 1,1)
+        let focusPoint = CGPoint(
+            x: tapPoint.x / bounds.width,
+            y: tapPoint.y / bounds.height
+        )
+        
+        print("CameraPreview: Tap detected at \(tapPoint), converted to focus point \(focusPoint)")
+        onTapToFocus?(focusPoint)
+        
+        // Show visual feedback for the tap
+        showFocusIndicator(at: tapPoint)
+    }
+    
+    private func showFocusIndicator(at point: CGPoint) {
+        // Remove any existing focus indicator
+        subviews.filter { $0.tag == 999 }.forEach { $0.removeFromSuperview() }
+        
+        // Create focus indicator
+        let focusView = UIView(frame: CGRect(x: 0, y: 0, width: 80, height: 80))
+        focusView.center = point
+        focusView.backgroundColor = UIColor.clear
+        focusView.layer.borderColor = UIColor.yellow.cgColor
+        focusView.layer.borderWidth = 2
+        focusView.layer.cornerRadius = 40
+        focusView.tag = 999
+        focusView.alpha = 0
+        
+        addSubview(focusView)
+        
+        // Animate the focus indicator
+        UIView.animate(withDuration: 0.2, animations: {
+            focusView.alpha = 1
+            focusView.transform = CGAffineTransform(scaleX: 0.8, y: 0.8)
+        }) { _ in
+            UIView.animate(withDuration: 0.3, delay: 0.5, animations: {
+                focusView.alpha = 0
+                focusView.transform = CGAffineTransform(scaleX: 1.2, y: 1.2)
+            }) { _ in
+                focusView.removeFromSuperview()
+            }
+        }
     }
     
     override func layoutSubviews() {

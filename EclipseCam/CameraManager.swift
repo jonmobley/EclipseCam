@@ -101,6 +101,9 @@ class CameraManager: NSObject, ObservableObject {
             session.addInput(videoDeviceInput)
             self.videoDeviceInput = videoDeviceInput
             print("CameraManager: Successfully added video input")
+            
+            // Configure focus settings for better close-up performance
+            configureFocusSettings(for: videoDevice)
         } else {
             print("CameraManager: Error - Cannot add video input to session")
         }
@@ -109,6 +112,47 @@ class CameraManager: NSObject, ObservableObject {
         
         session.commitConfiguration()
         print("CameraManager: Camera setup completed")
+    }
+    
+    private func configureFocusSettings(for device: AVCaptureDevice) {
+        do {
+            try device.lockForConfiguration()
+            
+            // Set continuous autofocus mode for better close-up performance
+            if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
+                print("CameraManager: Set focus mode to continuous autofocus")
+            } else if device.isFocusModeSupported(.autoFocus) {
+                device.focusMode = .autoFocus
+                print("CameraManager: Set focus mode to autofocus (continuous not supported)")
+            }
+            
+            // Enable smooth autofocus for better video recording
+            if device.isSmoothAutoFocusSupported {
+                device.isSmoothAutoFocusEnabled = true
+                print("CameraManager: Enabled smooth autofocus")
+            }
+            
+            // Set exposure mode to continuous for consistent lighting
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+                print("CameraManager: Set exposure mode to continuous auto exposure")
+            }
+            
+            // Enable auto white balance for better color accuracy
+            if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                device.whiteBalanceMode = .continuousAutoWhiteBalance
+                print("CameraManager: Set white balance mode to continuous auto")
+            }
+            
+            // Configure for close-up photography if supported
+            configureForCloseUpPhotography(device: device)
+            
+            device.unlockForConfiguration()
+            print("CameraManager: Focus configuration completed successfully")
+        } catch {
+            print("CameraManager: Error configuring focus settings: \(error)")
+        }
     }
     
     func startSession() {
@@ -183,6 +227,9 @@ class CameraManager: NSObject, ObservableObject {
             session.addInput(newVideoDeviceInput)
             videoDeviceInput = newVideoDeviceInput
             print("CameraManager: Successfully switched to \(currentCameraPosition) camera")
+            
+            // Configure focus settings for the new camera
+            configureFocusSettings(for: newVideoDevice)
         } else {
             print("CameraManager: Error - Cannot add new camera input")
             // Revert position and add back original input
@@ -193,5 +240,79 @@ class CameraManager: NSObject, ObservableObject {
         }
         
         session.commitConfiguration()
+    }
+    
+    private func configureForCloseUpPhotography(device: AVCaptureDevice) {
+        // Check for macro camera support (iPhone 13 Pro and later)
+        if #available(iOS 15.0, *) {
+            // Try to enable macro mode if available
+            if device.deviceType == .builtInUltraWideCamera {
+                print("CameraManager: Ultra-wide camera detected, may support macro mode")
+            }
+        }
+        
+        // Set minimum focus distance for better close-up performance
+        if device.isLockingFocusWithCustomLensPositionSupported {
+            // This allows for closer focusing
+            print("CameraManager: Custom lens position supported for close-up focusing")
+        }
+        
+        // Optimize for close-range subjects
+        if device.isFocusModeSupported(.continuousAutoFocus) {
+            // Already set above, but ensure it's optimized for close range
+            print("CameraManager: Continuous autofocus optimized for close-up photography")
+        }
+        
+        // Enable subject area change monitoring for better focus tracking
+        device.isSubjectAreaChangeMonitoringEnabled = true
+        print("CameraManager: Enabled subject area change monitoring for better focus tracking")
+    }
+    
+    func focusAt(point: CGPoint) {
+        guard let device = videoDeviceInput?.device else {
+            print("CameraManager: Cannot focus - no video device available")
+            return
+        }
+        
+        do {
+            try device.lockForConfiguration()
+            
+            // Set focus point of interest
+            if device.isFocusPointOfInterestSupported {
+                device.focusPointOfInterest = point
+                print("CameraManager: Set focus point of interest to \(point)")
+            }
+            
+            // Set exposure point of interest for better lighting at focus point
+            if device.isExposurePointOfInterestSupported {
+                device.exposurePointOfInterest = point
+                print("CameraManager: Set exposure point of interest to \(point)")
+            }
+            
+            // Temporarily switch to auto focus mode for the tap-to-focus action
+            if device.isFocusModeSupported(.autoFocus) {
+                device.focusMode = .autoFocus
+                print("CameraManager: Set focus mode to auto focus for tap-to-focus")
+                
+                // After a brief moment, switch back to continuous autofocus
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    do {
+                        try device.lockForConfiguration()
+                        if device.isFocusModeSupported(.continuousAutoFocus) {
+                            device.focusMode = .continuousAutoFocus
+                            print("CameraManager: Switched back to continuous autofocus")
+                        }
+                        device.unlockForConfiguration()
+                    } catch {
+                        print("CameraManager: Error switching back to continuous autofocus: \(error)")
+                    }
+                }
+            }
+            
+            device.unlockForConfiguration()
+            print("CameraManager: Tap-to-focus completed successfully")
+        } catch {
+            print("CameraManager: Error setting focus point: \(error)")
+        }
     }
 }

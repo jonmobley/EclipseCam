@@ -56,11 +56,11 @@ struct EnhancedImagePicker: View {
                     HistoryGridView(
                         historyItems: mediaHistory.historyItems,
                         onImageSelected: { image in
+                            print("🎬 EnhancedImagePicker: Image selected from history")
+                            isFromHistory = true // Mark as selected from history BEFORE setting selectedImage
                             selectedImage = image
                             selectedVideoURL = nil
-                            isFromHistory = true // Mark as selected from history
-                            onImageSelected?(image, true) // Notify parent: from history
-                            dismiss()
+                            // The onChange handler will handle calling the parent callback and dismissing
                         },
                         onVideoSelected: { videoURL in
                             selectedVideoURL = videoURL
@@ -130,9 +130,12 @@ struct EnhancedImagePicker: View {
                 },
                 onImageSelected: { image in
                     print("🎬 EnhancedImagePicker: onImageSelected called")
-                    print("🎬 EnhancedImagePicker: Calling parent onImageSelected directly")
-                    onImageSelected?(image, false) // Call parent directly
-                    dismiss() // Dismiss the picker
+                    print("🎬 EnhancedImagePicker: Setting selectedImage to trigger immediate update")
+                    
+                    // Set the selectedImage binding to trigger immediate UI update
+                    selectedImage = image
+                    
+                    // The onChange handler will handle calling the parent callback and dismissing
                 }
             )
             .onAppear {
@@ -143,6 +146,8 @@ struct EnhancedImagePicker: View {
         }
         .onAppear {
             print("🎬 EnhancedImagePicker appeared - selectedVideoURL: \(selectedVideoURL?.absoluteString ?? "nil")")
+            // Reset the isFromHistory flag when the picker appears
+            isFromHistory = false
         }
         .onReceive(Just(selectedVideoURL)) { url in
             print("🎬 EnhancedImagePicker received selectedVideoURL update: \(url?.absoluteString ?? "nil")")
@@ -150,12 +155,19 @@ struct EnhancedImagePicker: View {
         .onChange(of: selectedImage) { oldImage, newImage in
             print("🎬 selectedImage onChange: old=\(oldImage != nil ? "image" : "nil"), new=\(newImage != nil ? "image" : "nil"), isFromHistory=\(isFromHistory)")
             
-            if let image = newImage, !isFromHistory {
-                // Only add to history when image is selected from camera roll, not from history
-                print("🎬 Adding image to history and notifying parent")
-                mediaHistory.addToHistory(image)
-                onImageSelected?(image, false) // Notify parent: from camera roll
-                dismiss()
+            if let image = newImage {
+                if isFromHistory {
+                    // Image selected from history - notify parent and dismiss
+                    print("🎬 Image selected from history, notifying parent")
+                    onImageSelected?(image, true) // Notify parent: from history
+                    dismiss()
+                } else {
+                    // Image selected from camera roll - add to history, notify parent, and dismiss
+                    print("🎬 Adding image to history and notifying parent")
+                    mediaHistory.addToHistory(image)
+                    onImageSelected?(image, false) // Notify parent: from camera roll
+                    dismiss()
+                }
             } else if newImage == nil && oldImage != nil {
                 print("🎬 selectedImage was cleared (set to nil) - not calling onImageSelected")
             }

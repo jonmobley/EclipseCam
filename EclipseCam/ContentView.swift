@@ -340,7 +340,13 @@ struct CameraView: View {
                     // Show camera preview
                     if cameraManager.isAuthorized {
                         // Live camera preview
-                        CameraPreview(session: cameraManager.session, orientationMode: orientationMode)
+                        CameraPreview(
+                            session: cameraManager.session, 
+                            orientationMode: orientationMode,
+                            onTapToFocus: { point in
+                                cameraManager.focusAt(point: point)
+                            }
+                        )
                             .ignoresSafeArea()
                     } else {
                         // Permission denied or not granted
