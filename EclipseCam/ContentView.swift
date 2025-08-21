@@ -334,6 +334,19 @@ struct CameraView: View {
                             // Camera controls overlay
                             CameraControlsView(
                                 cameraManager: cameraManager,
+                                hasSelectedMedia: selectedImage != nil || selectedVideoURL != nil,
+                                showingCamera: showingCamera,
+                                selectedImage: selectedImage,
+                                onToggleCameraImage: {
+                                    print("🎬 Toggle from camera to media")
+                                    // Stop recording if currently recording when switching to image mode
+                                    if cameraManager.isRecording {
+                                        cameraManager.stopRecording()
+                                    }
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        showingCamera = false
+                                    }
+                                },
                                 onBack: onBack,
                                 orientationMode: orientationMode
                             )

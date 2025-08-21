@@ -20,6 +20,9 @@ class CameraManager: NSObject, ObservableObject {
     @Published var alertTitle = ""
     @Published var alertMessage = ""
     
+    // Camera control properties
+    @Published var currentZoomScale: CGFloat = 1.0
+    
     private var videoDeviceInput: AVCaptureDeviceInput?
     private var audioDeviceInput: AVCaptureDeviceInput?
     private var movieOutput: AVCaptureMovieFileOutput?
@@ -331,6 +334,64 @@ class CameraManager: NSObject, ObservableObject {
     private func stopRecordingTimer() {
         recordingTimer?.invalidate()
         recordingTimer = nil
+    }
+    
+    // MARK: - Camera Control Methods
+    
+    func handlePinchZoom(scale: CGFloat, state: UIGestureRecognizer.State) {
+        guard let device = videoDeviceInput?.device else { return }
+        
+        switch state {
+        case .changed:
+            let newZoomScale = min(max(currentZoomScale * scale, device.minAvailableVideoZoomFactor), device.maxAvailableVideoZoomFactor)
+            zoom(to: newZoomScale)
+        case .ended:
+            // Zoom gesture ended, keep current zoom
+            break
+        default:
+            break
+        }
+    }
+    
+    func zoom(to scale: CGFloat) {
+        guard let device = videoDeviceInput?.device else { return }
+        
+        let clampedScale = min(max(scale, device.minAvailableVideoZoomFactor), device.maxAvailableVideoZoomFactor)
+        
+        do {
+            try device.lockForConfiguration()
+            device.videoZoomFactor = clampedScale
+            device.unlockForConfiguration()
+            
+            DispatchQueue.main.async {
+                self.currentZoomScale = clampedScale
+            }
+        } catch {
+            print("CameraManager: Failed to set zoom: \(error)")
+        }
+    }
+    
+    func focus(at point: CGPoint) {
+        guard let device = videoDeviceInput?.device else { return }
+        
+        do {
+            try device.lockForConfiguration()
+            
+            if device.isFocusPointOfInterestSupported {
+                device.focusPointOfInterest = point
+                device.focusMode = .autoFocus
+            }
+            
+            if device.isExposurePointOfInterestSupported {
+                device.exposurePointOfInterest = point
+                device.exposureMode = .autoExpose
+            }
+            
+            device.unlockForConfiguration()
+            print("CameraManager: Focus set to point: \(point)")
+        } catch {
+            print("CameraManager: Failed to set focus: \(error)")
+        }
     }
     
     // MARK: - Alert Helper
