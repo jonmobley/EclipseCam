@@ -55,9 +55,9 @@ struct ContentView: View {
     var body: some View {
         NavigationView {
             if showFullscreenImage, let image = preSelectedImage {
-                FullscreenImageView(image: image, onDismiss: {
-                    showFullscreenImage = false
-                    showCameraView = true
+                FullscreenMediaView(image: image, onDismiss: {
+                    // Safe dismiss - return to main menu to avoid state conflicts
+                    resetToMainMenu()
                 }, onBack: {
                     // Back to main menu - clean reset
                     resetToMainMenu()
@@ -429,28 +429,26 @@ struct CameraView: View {
                     }
                 }
             }
-            .onLongPressGesture(minimumDuration: 1.0) {
-                // Long press: Return to main menu
-                cleanupAndExit()
-            }
-            .gesture(
-                // Swipe up from bottom edge: Return to main menu
-                DragGesture(minimumDistance: 50)
-                    .onEnded { value in
-                        // Check if swipe started from bottom edge and moved up
-                        let screenHeight = UIScreen.main.bounds.height
-                        let startY = value.startLocation.y
-                        let endY = value.location.y
-                        let swipeDistance = startY - endY
-                        
-                        // Swipe must start from bottom 100 points of screen and move up at least 50 points
-                        if startY > screenHeight - 100 && swipeDistance > 50 {
-                            cleanupAndExit()
-                        }
-                    }
-            )
         }
-        .localCameraMode()
+        .gesture(
+            // Swipe up from bottom edge: Return to main menu
+            DragGesture(minimumDistance: 50)
+                .onEnded { value in
+                    // Check if swipe started from bottom edge and moved up
+                    let screenHeight = UIScreen.main.bounds.height
+                    let startY = value.startLocation.y
+                    let endY = value.location.y
+                    let swipeDistance = startY - endY
+                    
+                    // Swipe must start from bottom 100 points of screen and move up at least 50 points
+                    if startY > screenHeight - 100 && swipeDistance > 50 {
+                        cleanupAndExit()
+                    }
+                }
+        )
+        .statusBarHidden(false)
+        .homeIndicatorHidden(true)
+        .ignoresSafeArea(.container, edges: .bottom)
         .onAppear {
             print("CameraView appeared")
             // Initialize with pre-selected image if available
@@ -521,7 +519,10 @@ struct CameraView: View {
                 } else if let image = selectedImage {
                     FullscreenMediaView(image: image, onDismiss: {
                         showingFullscreenImage = false
-                    }, onBack: onBack)
+                    }, onBack: onBack, onSwitchToCamera: {
+                        showingFullscreenImage = false
+                        showingCamera = true
+                    })
                 }
             }
         }
@@ -778,75 +779,88 @@ struct FullscreenMediaView: View {
     let videoURL: URL?
     let onDismiss: () -> Void
     let onBack: () -> Void
+    let onSwitchToCamera: (() -> Void)?
     
     // Initialize with MediaHistoryItem
-    init(mediaItem: MediaHistoryItem, onDismiss: @escaping () -> Void, onBack: @escaping () -> Void) {
+    init(mediaItem: MediaHistoryItem, onDismiss: @escaping () -> Void, onBack: @escaping () -> Void, onSwitchToCamera: (() -> Void)? = nil) {
         self.mediaItem = mediaItem
         self.image = mediaItem.image
         self.videoURL = mediaItem.videoURL
         self.onDismiss = onDismiss
         self.onBack = onBack
+        self.onSwitchToCamera = onSwitchToCamera
     }
     
     // Initialize with UIImage (backward compatibility)
-    init(image: UIImage, onDismiss: @escaping () -> Void, onBack: @escaping () -> Void) {
+    init(image: UIImage, onDismiss: @escaping () -> Void, onBack: @escaping () -> Void, onSwitchToCamera: (() -> Void)? = nil) {
         self.mediaItem = nil
         self.image = image
         self.videoURL = nil
         self.onDismiss = onDismiss
         self.onBack = onBack
+        self.onSwitchToCamera = onSwitchToCamera
     }
     
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            
-            if let videoURL = videoURL {
-                // Video playback
-                SeamlessVideoPlayer(videoURL: videoURL, aspectFit: true)
-                    .ignoresSafeArea()
-            } else if let image = image {
-                // Image display
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .ignoresSafeArea()
-            }
-            
-            // Controls overlay
-            VStack {
-                HStack {
-                    Button(action: onBack) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "chevron.left")
-                                .font(.title2)
-                            Text("Back")
-                                .font(.headline)
-                        }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(Color.black.opacity(0.6))
-                        .cornerRadius(20)
-                    }
-                    
-                    Spacer()
-                    
-                    Button(action: onDismiss) {
+        GeometryReader { geometry in
+            ZStack {
+                // Image background
+                if let image = image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+                }
+                
+                // Close button - positioned absolutely
+                Circle()
+                    .fill(Color.black.opacity(0.6))
+                    .frame(width: 44, height: 44)
+                    .overlay(
                         Image(systemName: "xmark")
                             .font(.title2)
+                            .fontWeight(.bold)
                             .foregroundColor(.white)
-                            .padding(12)
-                            .background(Color.black.opacity(0.6))
-                            .clipShape(Circle())
+                    )
+                    .position(x: geometry.size.width - 32, y: 32) // Top-right corner
+                    .onTapGesture {
+                        onBack() // Always go to main screen
                     }
-                }
-                .padding()
                 
-                Spacer()
+                // Camera toggle button - positioned like in camera view
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: 80, height: 80)
+                    .overlay(
+                        Circle()
+                            .fill(Color.black.opacity(0.8))
+                            .frame(width: 70, height: 70)
+                            .overlay(
+                                Image(systemName: "video.fill")
+                                    .font(.system(size: 24, weight: .medium))
+                                    .foregroundColor(.white)
+                            )
+                    )
+                    .position(
+                        x: geometry.size.width - 60, // Right side
+                        y: geometry.size.height - 120 // Bottom area
+                    )
+                    .onTapGesture {
+                        print("🎬 Switch to camera view")
+                        if let switchToCamera = onSwitchToCamera {
+                            switchToCamera()
+                        } else {
+                            onDismiss() // Fallback if no camera switch callback
+                        }
+                    }
             }
         }
-        .fullscreenMode()
+        .ignoresSafeArea()
+        .onAppear {
+            print("🔴 FullscreenMediaView appeared!")
+            print("🔴 Has image: \(image != nil)")
+        }
     }
 }
 
