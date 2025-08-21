@@ -153,6 +153,11 @@ struct MainMenuView: View {
                     .cornerRadius(8)
                     .padding(.horizontal, 20)
                     
+                    // Settings section
+                    SettingsView()
+                        .padding(.horizontal, 20)
+                        .padding(.top, 20)
+                    
                     // Dynamic Aspect Ratio Image Selection Area
                     VStack(spacing: 12) {
                         if let image = preSelectedImage {
@@ -263,24 +268,6 @@ struct MainMenuView: View {
                         }
                     }
                     .padding(.horizontal, 20)
-                    
-                    // Instructions section
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Instructions")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundColor(.white)
-                            Spacer()
-                        }
-                        
-                        Text("In LIVE mode, double tap the screen to switch between the Camera and Image. Long press to exit.")
-                            .font(.system(size: 15, weight: .regular))
-                            .foregroundColor(.white.opacity(0.8))
-                            .lineLimit(nil)
-                            .multilineTextAlignment(.leading)
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 40) // Increased spacing from thumbnail
                     
                     Spacer() // Push buttons to bottom
                     
@@ -1143,6 +1130,96 @@ struct AirPlayButton: UIViewRepresentable {
         
         deinit {
             NotificationCenter.default.removeObserver(self)
+        }
+    }
+}
+
+// MARK: - Settings View
+struct SettingsView: View {
+    @StateObject private var settings = SettingsManager.shared
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            // Section Header - Apple HIG Typography
+            HStack {
+                Text("Settings")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(.white)
+                Spacer()
+            }
+            
+            // Settings Groups with Apple HIG spacing
+            VStack(spacing: 0) {
+                // Recording Settings Group
+                VStack(spacing: 0) {
+                    SettingToggleRow(
+                        title: "Recording",
+                        isOn: $settings.enableRecording,
+                        action: { enabled in
+                            settings.updateEnableRecording(enabled)
+                        }
+                    )
+                    
+                    // Apple HIG separator
+                    Rectangle()
+                        .fill(Color.white.opacity(0.2))
+                        .frame(height: 0.5)
+                        .padding(.leading, 16)
+                    
+                    SettingToggleRow(
+                        title: "Auto Record",
+                        isOn: $settings.automaticallyRecord,
+                        isEnabled: settings.enableRecording,
+                        action: { enabled in
+                            settings.updateAutomaticallyRecord(enabled)
+                        }
+                    )
+                }
+            }
+            .background(Color.white.opacity(0.1))
+            .cornerRadius(12)
+        }
+    }
+}
+
+// MARK: - Setting Toggle Row
+struct SettingToggleRow: View {
+    let title: String
+    @Binding var isOn: Bool
+    var isEnabled: Bool = true
+    let action: (Bool) -> Void
+    
+    var body: some View {
+        HStack(spacing: 16) {
+            Text(title)
+                .font(.system(size: 17, weight: .regular)) // Apple HIG standard body text
+                .foregroundColor(isEnabled ? .white : .white.opacity(0.5))
+                .multilineTextAlignment(.leading)
+            
+            Spacer(minLength: 8)
+            
+            Toggle("", isOn: Binding(
+                get: { isOn },
+                set: { newValue in
+                    if isEnabled {
+                        isOn = newValue
+                        action(newValue)
+                    }
+                }
+            ))
+            .toggleStyle(SwitchToggleStyle(tint: .accentColor))
+            .disabled(!isEnabled)
+            .opacity(isEnabled ? 1.0 : 0.6)
+        }
+        .padding(.horizontal, 16) // Apple HIG standard horizontal padding
+        .padding(.vertical, 12)   // Apple HIG standard vertical padding for 44pt touch target
+        .frame(minHeight: 44)     // Apple HIG minimum touch target
+        .contentShape(Rectangle()) // Ensure entire row is tappable
+        .onTapGesture {
+            if isEnabled {
+                isOn.toggle()
+                action(isOn)
+            }
         }
     }
 }
