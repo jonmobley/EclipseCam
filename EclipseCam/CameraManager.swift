@@ -7,12 +7,25 @@
 
 import AVFoundation
 import SwiftUI
+import Photos
 
 class CameraManager: NSObject, ObservableObject {
     @Published var isAuthorized = false
     @Published var session = AVCaptureSession()
     
+    // Recording properties
+    @Published var isRecording = false
+    @Published var recordingDuration: TimeInterval = 0
+    @Published var showingAlert = false
+    @Published var alertTitle = ""
+    @Published var alertMessage = ""
+    
     private var videoDeviceInput: AVCaptureDeviceInput?
+    private var audioDeviceInput: AVCaptureDeviceInput?
+    private var movieOutput: AVCaptureMovieFileOutput?
+    private var recordingTimer: Timer?
+    private var shouldDiscardRecording = false
+    
     private var currentCameraPosition: AVCaptureDevice.Position = .back
     private var orientationMode: OrientationMode = .portrait
     
@@ -105,6 +118,12 @@ class CameraManager: NSObject, ObservableObject {
             print("CameraManager: Error - Cannot add video input to session")
         }
         
+        // Add audio input for recording
+        setupAudioInput()
+        
+        // Add movie output for recording
+        setupMovieOutput()
+        
         // Preview layer will be created by CameraPreview UIViewRepresentable
         
         session.commitConfiguration()
@@ -193,5 +212,209 @@ class CameraManager: NSObject, ObservableObject {
         }
         
         session.commitConfiguration()
+    }
+    
+    // MARK: - Recording Setup Methods
+    
+    private func setupAudioInput() {
+        // Remove existing audio input
+        if let audioInput = audioDeviceInput {
+            session.removeInput(audioInput)
+        }
+        
+        guard let audioDevice = AVCaptureDevice.default(for: .audio) else {
+            print("CameraManager: Warning - No audio device found")
+            return
+        }
+        
+        guard let audioDeviceInput = try? AVCaptureDeviceInput(device: audioDevice) else {
+            print("CameraManager: Error - Failed to create audio device input")
+            return
+        }
+        
+        if session.canAddInput(audioDeviceInput) {
+            session.addInput(audioDeviceInput)
+            self.audioDeviceInput = audioDeviceInput
+            print("CameraManager: Successfully added audio input")
+        } else {
+            print("CameraManager: Error - Cannot add audio input to session")
+        }
+    }
+    
+    private func setupMovieOutput() {
+        // Remove existing movie output
+        if let movieOutput = movieOutput {
+            session.removeOutput(movieOutput)
+        }
+        
+        let movieOutput = AVCaptureMovieFileOutput()
+        
+        if session.canAddOutput(movieOutput) {
+            session.addOutput(movieOutput)
+            self.movieOutput = movieOutput
+            print("CameraManager: Successfully added movie output")
+        } else {
+            print("CameraManager: Error - Cannot add movie output to session")
+        }
+    }
+    
+    // MARK: - Recording Methods
+    
+    func startRecording() {
+        guard let movieOutput = movieOutput else {
+            showAlert(title: "Recording Error", message: "Movie output not available")
+            return
+        }
+        
+        guard !isRecording else {
+            print("CameraManager: Already recording")
+            return
+        }
+        
+        // Create output file URL
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let outputURL = documentsPath.appendingPathComponent("recording_\(Date().timeIntervalSince1970).mov")
+        
+        // Reset recording state
+        shouldDiscardRecording = false
+        recordingDuration = 0
+        
+        movieOutput.startRecording(to: outputURL, recordingDelegate: self)
+        
+        DispatchQueue.main.async {
+            self.isRecording = true
+            self.startRecordingTimer()
+        }
+        
+        print("CameraManager: Started recording to: \(outputURL.path)")
+    }
+    
+    func stopRecording() {
+        guard isRecording else { return }
+        
+        movieOutput?.stopRecording()
+        
+        DispatchQueue.main.async {
+            self.isRecording = false
+            self.stopRecordingTimer()
+        }
+        
+        print("CameraManager: Stopped recording")
+    }
+    
+    func cancelRecording() {
+        guard isRecording else { return }
+        
+        print("CameraManager: Canceling recording (will not save)")
+        
+        // Set flag to indicate this recording should be discarded
+        shouldDiscardRecording = true
+        
+        movieOutput?.stopRecording()
+        
+        DispatchQueue.main.async {
+            self.isRecording = false
+            self.stopRecordingTimer()
+        }
+        
+        print("CameraManager: Recording canceled")
+    }
+    
+    private func startRecordingTimer() {
+        recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in
+                self?.recordingDuration += 1
+            }
+        }
+    }
+    
+    private func stopRecordingTimer() {
+        recordingTimer?.invalidate()
+        recordingTimer = nil
+    }
+    
+    // MARK: - Alert Helper
+    
+    private func showAlert(title: String, message: String) {
+        alertTitle = title
+        alertMessage = message
+        showingAlert = true
+    }
+}
+
+// MARK: - AVCaptureFileOutputRecordingDelegate
+
+extension CameraManager: AVCaptureFileOutputRecordingDelegate {
+    func fileOutput(_ output: AVCaptureFileOutput, didStartRecordingTo fileURL: URL, from connections: [AVCaptureConnection]) {
+        print("CameraManager: Recording started to file: \(fileURL.path)")
+    }
+    
+    func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
+        print("CameraManager: Recording finished to file: \(outputFileURL.path)")
+        
+        if let error = error {
+            print("CameraManager: Recording error: \(error.localizedDescription)")
+            DispatchQueue.main.async {
+                self.showAlert(title: "Recording Error", message: error.localizedDescription)
+            }
+            return
+        }
+        
+        // Check if recording should be discarded
+        if shouldDiscardRecording {
+            print("CameraManager: Discarding recording as requested")
+            try? FileManager.default.removeItem(at: outputFileURL)
+            return
+        }
+        
+        // Save to photo library
+        saveVideoToPhotoLibrary(url: outputFileURL)
+    }
+    
+    private func saveVideoToPhotoLibrary(url: URL) {
+        // Check photo library permission
+        let status = PHPhotoLibrary.authorizationStatus()
+        
+        switch status {
+        case .authorized, .limited:
+            performSave(url: url)
+        case .notDetermined:
+            PHPhotoLibrary.requestAuthorization { [weak self] status in
+                if status == .authorized || status == .limited {
+                    self?.performSave(url: url)
+                } else {
+                    DispatchQueue.main.async {
+                        self?.showAlert(title: "Save Failed", message: "Photo library access denied")
+                    }
+                }
+            }
+        case .denied, .restricted:
+            DispatchQueue.main.async {
+                self.showAlert(title: "Save Failed", message: "Photo library access denied")
+            }
+        @unknown default:
+            DispatchQueue.main.async {
+                self.showAlert(title: "Save Failed", message: "Unknown photo library permission status")
+            }
+        }
+    }
+    
+    private func performSave(url: URL) {
+        PHPhotoLibrary.shared().performChanges({
+            PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+        }) { [weak self] success, error in
+            DispatchQueue.main.async {
+                if success {
+                    print("CameraManager: Video saved to photo library successfully")
+                    self?.showAlert(title: "Recording Saved", message: "Video saved to photo library")
+                } else if let error = error {
+                    print("CameraManager: Failed to save video: \(error.localizedDescription)")
+                    self?.showAlert(title: "Save Failed", message: error.localizedDescription)
+                }
+            }
+            
+            // Clean up temporary file
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 }

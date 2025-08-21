@@ -326,9 +326,19 @@ struct CameraView: View {
                 if showingCamera {
                     // Show camera preview
                     if cameraManager.isAuthorized {
-                        // Live camera preview
-                        CameraPreview(session: cameraManager.session, orientationMode: orientationMode)
+                        ZStack {
+                            // Live camera preview
+                            CameraPreview(session: cameraManager.session, orientationMode: orientationMode)
+                                .ignoresSafeArea()
+                            
+                            // Camera controls overlay
+                            CameraControlsView(
+                                cameraManager: cameraManager,
+                                onBack: onBack,
+                                orientationMode: orientationMode
+                            )
                             .ignoresSafeArea()
+                        }
                     } else {
                         // Permission denied or not granted
                         VStack(spacing: 20) {
@@ -396,17 +406,35 @@ struct CameraView: View {
         }
         .statusBarHidden(true) // Hide status bar for clean streaming appearance
         .onAppear {
+            print("CameraView appeared")
             // Initialize with pre-selected image if available
             if selectedImage == nil {
                 selectedImage = preSelectedImage
+                // If we have a pre-selected image, start in media mode
+                if preSelectedImage != nil {
+                    showingCamera = false
+                }
             }
+            
             cameraManager.configure(for: orientationMode)
             // Small delay to ensure configuration is complete before starting
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 cameraManager.startSession()
+                
+                // Auto-start recording if enabled and showing camera
+                if showingCamera && SettingsManager.shared.automaticallyRecord && SettingsManager.shared.enableRecording {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        cameraManager.startRecording()
+                    }
+                }
             }
         }
         .onDisappear {
+            print("CameraView disappearing - cleaning up")
+            // Clean up when view disappears
+            if cameraManager.isRecording {
+                cameraManager.stopRecording()
+            }
             cameraManager.stopSession()
         }
         .sheet(isPresented: $showingImagePicker) {
