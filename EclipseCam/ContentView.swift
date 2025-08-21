@@ -318,100 +318,85 @@ struct CameraView: View {
             // Black background for clean AirPlay appearance
             Color.black.ignoresSafeArea()
             
-            // Main content with tap gestures - toggles between camera and image
-            ZStack {
-                if showingCamera {
-                    // Show camera preview
-                    if cameraManager.isAuthorized {
+            // Main content - showing either camera or media
+            if showingCamera {
+                // CAMERA VIEW
+                if cameraManager.isAuthorized {
+                    ZStack {
                         // Live camera preview
                         CameraPreview(
                             session: cameraManager.session, 
                             orientationMode: orientationMode
                         )
-                            .ignoresSafeArea()
+                        .ignoresSafeArea()
                         
-                        // Camera controls overlay (only shown when camera is active)
+                        // Camera controls overlay
                         CameraControlsView(
                             cameraManager: cameraManager,
                             hasSelectedMedia: selectedImage != nil || selectedVideoURL != nil,
                             showingCamera: showingCamera,
                             selectedImage: selectedImage,
                             onToggleCameraImage: {
+                                print("🎬 Toggle from camera to media")
                                 // Stop recording if currently recording when switching to image mode
-                                if showingCamera && cameraManager.isRecording {
+                                if cameraManager.isRecording {
                                     cameraManager.stopRecording()
                                 }
-                                showingCamera.toggle()
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showingCamera = false
+                                }
                             },
                             onBack: onBack,
                             orientationMode: orientationMode
                         )
                         .ignoresSafeArea()
-                    } else {
-                        // Permission denied or not granted
-                        VStack(spacing: 20) {
-                            Image(systemName: "camera.fill")
-                                .font(.system(size: 50))
-                                .foregroundColor(.white.opacity(0.6))
-                            
-                            Text("Camera Access Required")
-                                .font(.system(size: 20, weight: .semibold))
-                                .foregroundColor(.white)
-                            
-                            Text("Please enable camera access in Settings to use live video")
-                                .font(.system(size: 16))
-                                .foregroundColor(.white.opacity(0.8))
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, 40)
-                        }
                     }
-                } else if let videoURL = selectedVideoURL {
-                    // Show selected video with seamless looping
-                    ZStack {
+                } else {
+                    // Permission denied or not granted
+                    VStack(spacing: 20) {
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 50))
+                            .foregroundColor(.white.opacity(0.6))
+                        
+                        Text("Camera Access Required")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(.white)
+                        
+                        Text("Please enable camera access in Settings to use live video")
+                            .font(.system(size: 16))
+                            .foregroundColor(.white.opacity(0.8))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 40)
+                    }
+                }
+            } else {
+                // MEDIA VIEW (Image or Video)
+                ZStack {
+                    // Show the media content
+                    if let videoURL = selectedVideoURL {
+                        // Show selected video with seamless looping
                         SeamlessVideoPlayer(videoURL: videoURL, aspectFit: false)
                             .ignoresSafeArea()
-                        
-                        // Media toggle button overlay for video mode
-                        MediaToggleOverlay(
-                            orientationMode: orientationMode,
-                            showingCamera: showingCamera,
-                            selectedImage: selectedImage,
-                            cameraManager: cameraManager,
-                            onToggleCameraImage: {
-                                print("🎬 Video mode toggle called")
-                                // Stop recording if currently recording when switching modes
-                                if showingCamera && cameraManager.isRecording {
-                                    cameraManager.stopRecording()
-                                }
-                                showingCamera.toggle()
-                            }
-                        )
-                    }
-                } else if let image = selectedImage {
-                    // Show selected image
-                    ZStack {
+                    } else if let image = selectedImage {
+                        // Show selected image
                         Image(uiImage: image)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
                             .ignoresSafeArea()
                             .clipped()
-                        
-                        // Media toggle button overlay for image mode
-                        MediaToggleOverlay(
-                            orientationMode: orientationMode,
-                            showingCamera: showingCamera,
-                            selectedImage: selectedImage,
-                            cameraManager: cameraManager,
-                            onToggleCameraImage: {
-                                print("🎬 Image mode toggle called")
-                                // Stop recording if currently recording when switching modes
-                                if showingCamera && cameraManager.isRecording {
-                                    cameraManager.stopRecording()
-                                }
-                                showingCamera.toggle()
-                            }
-                        )
                     }
+                    
+                    // Simple toggle button overlay - ALWAYS show when not in camera mode
+                    SimpleCameraToggleButton(
+                        orientationMode: orientationMode,
+                        isRecording: cameraManager.isRecording,
+                        onToggle: {
+                            print("🎬 Toggle from media back to camera")
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showingCamera = true
+                            }
+                        }
+                    )
                 }
             }
             .onLongPressGesture(minimumDuration: 1.0) {
@@ -448,7 +433,12 @@ struct CameraView: View {
             // Initialize with pre-selected image if available
             if selectedImage == nil {
                 selectedImage = preSelectedImage
+                // If we have a pre-selected image, start in media mode
+                if preSelectedImage != nil {
+                    showingCamera = false
+                }
             }
+            
             cameraManager.configure(for: orientationMode)
             // Small delay to ensure configuration is complete before starting
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -473,10 +463,9 @@ struct CameraView: View {
                     print("🎬 CameraView: onImageSelected called with image, isFromHistory=\(isFromHistory)")
                     
                     // Clear video selection when image is selected
-                    print("🎬 CameraView: Clearing selectedVideoURL (was: \(selectedVideoURL?.absoluteString ?? "nil"))")
                     selectedVideoURL = nil
                     selectedMediaItem = nil
-                    showingCamera = false
+                    showingCamera = false // Switch to media view
                     
                     // Only add to history if it's from camera roll, not from history
                     if !isFromHistory {
@@ -485,18 +474,13 @@ struct CameraView: View {
                 },
                 onVideoSelected: { videoURL, isFromHistory in
                     print("🎬 CameraView: onVideoSelected called with: \(videoURL.absoluteString)")
-                    print("🎬 CameraView: isFromHistory: \(isFromHistory)")
                     
                     // Clear image selection when video is selected
                     selectedImage = nil
                     selectedMediaItem = nil
-                    showingCamera = false
+                    showingCamera = false // Switch to media view
                     
-                    // Video import is handled in EnhancedImagePicker
-                    // Just store the URL for playback
-                    print("🎬 CameraView: Setting selectedVideoURL to: \(videoURL.absoluteString)")
                     selectedVideoURL = videoURL
-                    print("🎬 CameraView: selectedVideoURL is now: \(selectedVideoURL?.absoluteString ?? "nil")")
                 }
             )
         }
@@ -1164,6 +1148,86 @@ struct MediaToggleOverlay: View {
         .onAppear {
             print("🎬 MediaToggleButton appeared!")
         }
+    }
+}
+
+// MARK: - Simple Camera Toggle Button
+struct SimpleCameraToggleButton: View {
+    let orientationMode: OrientationMode
+    let isRecording: Bool
+    let onToggle: () -> Void
+    
+    var body: some View {
+        ZStack {
+            if orientationMode == .landscape {
+                // Landscape: Button on right side, bottom position
+                HStack {
+                    Spacer()
+                    
+                    VStack {
+                        Spacer()
+                        Spacer() // Extra spacer for camera switch button position
+                        Spacer() // Extra spacer for record button position
+                        
+                        toggleButton
+                    }
+                    .padding(.trailing, 20)
+                }
+            } else {
+                // Portrait: Button on bottom left
+                VStack {
+                    Spacer()
+                    
+                    HStack {
+                        toggleButton
+                        Spacer()
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 40)
+                }
+            }
+        }
+    }
+    
+    private var toggleButton: some View {
+        Button(action: {
+            print("🎬 SimpleCameraToggleButton tapped!")
+            onToggle()
+        }) {
+            ZStack {
+                // White border ring (red if recording)
+                Circle()
+                    .fill(isRecording ? Color.red : Color.white)
+                    .frame(width: 80, height: 80)
+                
+                // Background circle
+                Circle()
+                    .fill(Color.black.opacity(0.8))
+                    .frame(width: 70, height: 70)
+                
+                // Camera icon to indicate switching back to camera
+                Image(systemName: "video.fill")
+                    .font(.system(size: 24, weight: .medium))
+                    .foregroundColor(.white)
+                
+                // Recording indicator dot
+                if isRecording {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 10, height: 10)
+                                .padding(.trailing, 6)
+                                .padding(.top, 6)
+                        }
+                        Spacer()
+                    }
+                    .frame(width: 80, height: 80)
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 
