@@ -7,6 +7,7 @@
 
 import AVFoundation
 import SwiftUI
+import Photos
 
 class CameraManager: NSObject, ObservableObject {
     @Published var isAuthorized = false
@@ -16,6 +17,10 @@ class CameraManager: NSObject, ObservableObject {
     @Published var currentZoomScale: CGFloat = 1.0
     @Published var isRecording = false
     @Published var recordingDuration: TimeInterval = 0
+    @Published var showingAlert = false
+    @Published var alertTitle = ""
+    @Published var alertMessage = ""
+    @Published var isAirPlayConnected = false
     
     // MARK: - Existing Properties (preserved)
     private var videoDeviceInput: AVCaptureDeviceInput?
@@ -26,36 +31,55 @@ class CameraManager: NSObject, ObservableObject {
     private var movieOutput: AVCaptureMovieFileOutput?
     private var recordingTimer: Timer?
     private var initialZoomScale: CGFloat = 1.0
+    private var shouldDiscardRecording = false
     
     // MARK: - External Display Properties (for clean AirPlay)
     private var externalWindow: UIWindow?
     private var externalPreviewLayer: AVCaptureVideoPreviewLayer?
-    private var airPlayObserver: NSObjectProtocol?
-    private var disconnectObserver: NSObjectProtocol?
+    private var sceneConnectObserver: NSObjectProtocol?
+    private var sceneDisconnectObserver: NSObjectProtocol?
+    
+    // MARK: - App Lifecycle Properties
+    private var backgroundObserver: NSObjectProtocol?
+    private var foregroundObserver: NSObjectProtocol?
+    private var wasRecordingBeforeBackground = false
     
     override init() {
         super.init()
         checkPermissions()
         setupExternalDisplayMonitoring()
+        setupAppLifecycleMonitoring()
     }
     
     deinit {
         // Clean up external display observers
-        if let observer = airPlayObserver {
+        if let observer = sceneConnectObserver {
             NotificationCenter.default.removeObserver(observer)
         }
-        if let observer = disconnectObserver {
+        if let observer = sceneDisconnectObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        
+        // Clean up app lifecycle observers
+        if let observer = backgroundObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = foregroundObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        
         recordingTimer?.invalidate()
         tearDownExternalDisplay()
     }
     
     func configure(for orientation: OrientationMode) {
         print("CameraManager: Configuring for orientation: \(orientation)")
+        print("CameraManager: Current authorization status: \(isAuthorized)")
         orientationMode = orientation
         if isAuthorized {
             setupCamera()
+        } else {
+            print("CameraManager: Camera not authorized, cannot setup camera")
         }
     }
     
@@ -197,10 +221,11 @@ class CameraManager: NSObject, ObservableObject {
             return 
         }
         print("CameraManager: Starting camera session...")
+        print("CameraManager: Session has \(session.inputs.count) inputs and \(session.outputs.count) outputs")
         DispatchQueue.global(qos: .userInitiated).async {
             self.session.startRunning()
             DispatchQueue.main.async {
-                print("CameraManager: Camera session started successfully")
+                print("CameraManager: Camera session started successfully - isRunning: \(self.session.isRunning)")
             }
         }
     }
@@ -263,6 +288,11 @@ class CameraManager: NSObject, ObservableObject {
             session.addInput(newVideoDeviceInput)
             videoDeviceInput = newVideoDeviceInput
             print("CameraManager: Successfully switched to \(currentCameraPosition) camera")
+            
+            // Reset zoom when switching cameras
+            DispatchQueue.main.async {
+                self.currentZoomScale = 1.0
+            }
             
             // Configure focus settings for the new camera
             configureFocusSettings(for: newVideoDevice)
@@ -380,9 +410,27 @@ class CameraManager: NSObject, ObservableObject {
         print("CameraManager: Stopped recording")
     }
     
+    func cancelRecording() {
+        guard isRecording else { return }
+        
+        print("CameraManager: Canceling recording (will not save)")
+        
+        // Set flag to indicate this recording should be discarded
+        shouldDiscardRecording = true
+        
+        movieOutput?.stopRecording()
+        
+        DispatchQueue.main.async {
+            self.isRecording = false
+            self.stopRecordingTimer()
+        }
+        
+        print("CameraManager: Recording canceled")
+    }
+    
     private func startRecordingTimer() {
         recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 self?.recordingDuration += 1
             }
         }
@@ -423,6 +471,9 @@ class CameraManager: NSObject, ObservableObject {
     
     func handlePinchZoom(scale: CGFloat, state: UIGestureRecognizer.State) {
         guard let device = videoDeviceInput?.device else { return }
+        
+        // Disable zoom on front camera (usually doesn't support zoom well)
+        if currentCameraPosition == .front { return }
         
         switch state {
         case .began:
@@ -499,19 +550,20 @@ class CameraManager: NSObject, ObservableObject {
     // MARK: - External Display Methods (Clean AirPlay)
     
     private func setupExternalDisplayMonitoring() {
-        // Monitor screen connection
-        airPlayObserver = NotificationCenter.default.addObserver(
-            forName: UIScreen.didConnectNotification,
+        // Monitor scene connection (modern iOS 13+ approach)
+        sceneConnectObserver = NotificationCenter.default.addObserver(
+            forName: UIScene.didActivateNotification,
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let connectedScreen = notification.object as? UIScreen else { return }
-            self?.setupExternalDisplay(screen: connectedScreen)
+            guard let scene = notification.object as? UIWindowScene,
+                  scene != UIApplication.shared.connectedScenes.first else { return }
+            self?.setupExternalDisplay(scene: scene)
         }
         
-        // Monitor screen disconnection
-        disconnectObserver = NotificationCenter.default.addObserver(
-            forName: UIScreen.didDisconnectNotification,
+        // Monitor scene disconnection
+        sceneDisconnectObserver = NotificationCenter.default.addObserver(
+            forName: UIScene.didDisconnectNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -519,23 +571,26 @@ class CameraManager: NSObject, ObservableObject {
         }
         
         // Check if already connected to external display
-        if UIScreen.screens.count > 1 {
-            for screen in UIScreen.screens where screen != UIScreen.main {
-                setupExternalDisplay(screen: screen)
-                break
+        let externalScenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        if externalScenes.count > 1 {
+            // Find the external scene (not the main one)
+            if let mainScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                for scene in externalScenes where scene != mainScene {
+                    setupExternalDisplay(scene: scene)
+                    break
+                }
             }
         }
     }
     
-    private func setupExternalDisplay(screen: UIScreen) {
+    private func setupExternalDisplay(scene: UIWindowScene) {
         print("CameraManager: Setting up external display (clean AirPlay)")
         
         // Clean up any existing external window
         tearDownExternalDisplay()
         
         // Create window for external display
-        externalWindow = UIWindow(frame: screen.bounds)
-        externalWindow?.screen = screen
+        externalWindow = UIWindow(windowScene: scene)
         
         // Create a view controller for the external display
         let externalViewController = UIViewController()
@@ -543,7 +598,7 @@ class CameraManager: NSObject, ObservableObject {
         
         // Create preview layer for external display (NO UI overlays - clean camera only)
         externalPreviewLayer = AVCaptureVideoPreviewLayer(session: session)
-        externalPreviewLayer?.frame = screen.bounds
+        externalPreviewLayer?.frame = scene.coordinateSpace.bounds
         externalPreviewLayer?.videoGravity = .resizeAspectFill
         
         if let externalPreviewLayer = externalPreviewLayer {
@@ -556,11 +611,26 @@ class CameraManager: NSObject, ObservableObject {
         
         // Adjust video orientation for external display
         if let connection = externalPreviewLayer?.connection {
-            // Most TVs are landscape
-            connection.videoOrientation = orientationMode == .landscape ? .landscapeRight : .portrait
+            // Use modern iOS 17+ API when available, fallback to legacy for older versions
+            if #available(iOS 17.0, *) {
+                let rotationAngle: CGFloat = orientationMode == .landscape ? 0.0 : 90.0
+                if connection.isVideoRotationAngleSupported(rotationAngle) {
+                    connection.videoRotationAngle = rotationAngle
+                }
+            } else {
+                // Legacy approach for iOS 16 and earlier
+                if connection.isVideoOrientationSupported {
+                    connection.videoOrientation = orientationMode == .landscape ? .landscapeRight : .portrait
+                }
+            }
         }
         
         print("CameraManager: External display setup complete - clean camera feed only")
+        
+        // Update AirPlay connection status
+        DispatchQueue.main.async { [weak self] in
+            self?.isAirPlayConnected = true
+        }
     }
     
     private func tearDownExternalDisplay() {
@@ -569,6 +639,82 @@ class CameraManager: NSObject, ObservableObject {
         externalWindow?.isHidden = true
         externalWindow = nil
         print("CameraManager: External display torn down")
+        
+        // Update AirPlay connection status (with weak self to prevent crash during deallocation)
+        DispatchQueue.main.async { [weak self] in
+            self?.isAirPlayConnected = false
+        }
+    }
+    
+    // MARK: - App Lifecycle Methods
+    
+    private func setupAppLifecycleMonitoring() {
+        print("CameraManager: Setting up app lifecycle monitoring")
+        
+        // Monitor app going to background
+        backgroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleAppWillResignActive()
+        }
+        
+        // Monitor app returning to foreground
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleAppDidBecomeActive()
+        }
+    }
+    
+    private func handleAppWillResignActive() {
+        print("CameraManager: App will resign active - handling camera session and recording")
+        
+        // Save recording state
+        wasRecordingBeforeBackground = isRecording
+        
+        // Stop recording if active (iOS doesn't allow background recording for camera apps)
+        if isRecording {
+            print("CameraManager: Stopping recording due to app backgrounding")
+            stopRecording()
+        }
+        
+        // Stop camera session to free up resources
+        if session.isRunning {
+            print("CameraManager: Stopping camera session due to app backgrounding")
+            stopSession()
+        }
+    }
+    
+    private func handleAppDidBecomeActive() {
+        print("CameraManager: App did become active - resuming camera session")
+        
+        // Restart camera session if it was running
+        if !session.isRunning && isAuthorized {
+            print("CameraManager: Restarting camera session after returning to foreground")
+            // Small delay to ensure app is fully active
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.startSession()
+            }
+        }
+        
+        // Note: We don't automatically restart recording - user must manually restart
+        // This is intentional for safety and user awareness
+        if wasRecordingBeforeBackground {
+            print("CameraManager: Recording was active before backgrounding - user must manually restart")
+            wasRecordingBeforeBackground = false
+        }
+    }
+    
+    // MARK: - Alert Helper
+    
+    private func showAlert(title: String, message: String) {
+        alertTitle = title
+        alertMessage = message
+        showingAlert = true
     }
     
 }
@@ -579,12 +725,53 @@ extension CameraManager: AVCaptureFileOutputRecordingDelegate {
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
         if let error = error {
             print("CameraManager: Recording failed with error: \(error)")
+            // Clean up the file if it exists
+            try? FileManager.default.removeItem(at: outputFileURL)
             return
         }
         
         print("CameraManager: Recording finished successfully: \(outputFileURL.path)")
         
-        // Here you could add the video to your MediaHistoryManager
-        // MediaHistoryManager.shared.addToHistory(outputFileURL)
+        // Check if recording should be discarded
+        if shouldDiscardRecording {
+            print("CameraManager: Discarding recording as requested")
+            // Delete the file without saving
+            try? FileManager.default.removeItem(at: outputFileURL)
+            shouldDiscardRecording = false // Reset flag
+            return
+        }
+        
+        // Save video to photo library
+        saveVideoToPhotoLibrary(url: outputFileURL)
+        
+        // Note: Recorded videos are NOT automatically added to MediaHistoryManager
+        // Only manually selected content from the thumbnail picker should appear in history
+    }
+    
+    private func saveVideoToPhotoLibrary(url: URL) {
+        PHPhotoLibrary.requestAuthorization { status in
+            guard status == .authorized else {
+                print("CameraManager: Photo library access denied")
+                return
+            }
+            
+            PHPhotoLibrary.shared().performChanges({
+                PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+            }) { success, error in
+                DispatchQueue.main.async {
+                    if success {
+                        print("CameraManager: Video saved to photo library successfully")
+                        // Note: Success popup disabled per user request
+                        // self.showAlert(title: "Success", message: "Video saved to Photos")
+                    } else if let error = error {
+                        print("CameraManager: Failed to save video to photo library: \(error)")
+                        self.showAlert(title: "Error", message: "Failed to save video: \(error.localizedDescription)")
+                    }
+                    
+                    // Clean up temporary file
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
+        }
     }
 }

@@ -18,6 +18,7 @@ import SwiftUI
 import AVFoundation
 import AVKit
 import PhotosUI
+import UIKit
 
 enum OrientationMode: CaseIterable {
     case portrait // 9:16
@@ -267,34 +268,15 @@ struct MainMenuView: View {
                     }
                     .padding(.horizontal, 20)
                     
-                    // Instructions section
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Instructions")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundColor(.white)
-                            Spacer()
-                        }
-                        
-                        Text("In LIVE mode, double tap the screen to switch between the Camera and Image. Long press to exit.")
-                            .font(.system(size: 15, weight: .regular))
-                            .foregroundColor(.white.opacity(0.8))
-                            .lineLimit(nil)
-                            .multilineTextAlignment(.leading)
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 40) // Increased spacing from thumbnail
+                    // Settings section
+                    SettingsView()
+                        .padding(.horizontal, 20)
+                        .padding(.top, 40) // Increased spacing from thumbnail
                     
                     Spacer() // Push buttons to bottom
                     
-                    VStack(spacing: 8) { // Apple HIG standard spacing for related buttons
-                        // AirPlay Connect button
-                        AirPlayButton()
-                            .frame(height: 50) // Match Go Live button height
-                            .padding(.horizontal, 20)
-                        
-                        // Go Live button
-                        Button(action: {
+                    // Go Live button
+                    Button(action: {
                         onGoLive()
                     }) {
                         Text("Go Live")
@@ -305,10 +287,9 @@ struct MainMenuView: View {
                             .frame(height: 50) // Standard touch target height
                             .background(Color.accentColor) // Use system accent color
                             .cornerRadius(10)
-                        }
-                        .buttonStyle(.plain) // Use standard button interaction
-                        .padding(.horizontal, 20)
                     }
+                    .buttonStyle(.plain) // Use standard button interaction
+                    .padding(.horizontal, 20)
                     .padding(.bottom, 20) // Reduced padding - closer to bottom
                 }
                 .padding(.bottom, 20) // Reduced padding - closer to bottom
@@ -348,6 +329,24 @@ struct CameraView: View {
                             orientationMode: orientationMode
                         )
                             .ignoresSafeArea()
+                        
+                        // Camera controls overlay (only shown when camera is active)
+                        CameraControlsView(
+                            cameraManager: cameraManager,
+                            hasSelectedMedia: selectedImage != nil || selectedVideoURL != nil,
+                            showingCamera: showingCamera,
+                            selectedImage: selectedImage,
+                            onToggleCameraImage: {
+                                // Stop recording if currently recording when switching to image mode
+                                if showingCamera && cameraManager.isRecording {
+                                    cameraManager.stopRecording()
+                                }
+                                showingCamera.toggle()
+                            },
+                            onBack: onBack,
+                            orientationMode: orientationMode
+                        )
+                        .ignoresSafeArea()
                     } else {
                         // Permission denied or not granted
                         VStack(spacing: 20) {
@@ -368,32 +367,59 @@ struct CameraView: View {
                     }
                 } else if let videoURL = selectedVideoURL {
                     // Show selected video with seamless looping
-                    SeamlessVideoPlayer(videoURL: videoURL, aspectFit: false)
-                        .ignoresSafeArea()
+                    ZStack {
+                        SeamlessVideoPlayer(videoURL: videoURL, aspectFit: false)
+                            .ignoresSafeArea()
+                        
+                        // Media toggle button overlay for video mode
+                        MediaToggleOverlay(
+                            orientationMode: orientationMode,
+                            showingCamera: showingCamera,
+                            selectedImage: selectedImage,
+                            cameraManager: cameraManager,
+                            onToggleCameraImage: {
+                                print("🎬 Video mode toggle called")
+                                // Stop recording if currently recording when switching modes
+                                if showingCamera && cameraManager.isRecording {
+                                    cameraManager.stopRecording()
+                                }
+                                showingCamera.toggle()
+                            }
+                        )
+                    }
                 } else if let image = selectedImage {
                     // Show selected image
-                    Image(uiImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .ignoresSafeArea()
-                        .clipped()
+                    ZStack {
+                        Image(uiImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .ignoresSafeArea()
+                            .clipped()
+                        
+                        // Media toggle button overlay for image mode
+                        MediaToggleOverlay(
+                            orientationMode: orientationMode,
+                            showingCamera: showingCamera,
+                            selectedImage: selectedImage,
+                            cameraManager: cameraManager,
+                            onToggleCameraImage: {
+                                print("🎬 Image mode toggle called")
+                                // Stop recording if currently recording when switching modes
+                                if showingCamera && cameraManager.isRecording {
+                                    cameraManager.stopRecording()
+                                }
+                                showingCamera.toggle()
+                            }
+                        )
+                    }
                 }
-            }
-            .onTapGesture(count: 2) {
-                // Double tap: Switch camera
-                if cameraManager.isAuthorized {
-                    cameraManager.switchCamera()
-                }
-            }
-            .onTapGesture(count: 1) {
-                // Single tap: Toggle between camera and image
-                if selectedImage != nil {
-                    showingCamera.toggle()
-                }
-                // If no image selected, single tap does nothing (only camera is shown)
             }
             .onLongPressGesture(minimumDuration: 1.0) {
                 // Long press: Return to main menu
+                // Stop recording if currently recording before returning to main page
+                if cameraManager.isRecording {
+                    cameraManager.stopRecording()
+                }
                 onBack()
             }
             .gesture(
@@ -408,12 +434,16 @@ struct CameraView: View {
                         
                         // Swipe must start from bottom 100 points of screen and move up at least 50 points
                         if startY > screenHeight - 100 && swipeDistance > 50 {
+                            // Stop recording if currently recording before returning to main page
+                            if cameraManager.isRecording {
+                                cameraManager.stopRecording()
+                            }
                             onBack()
                         }
                     }
             )
         }
-        .fullscreenMode()
+        .localCameraMode()
         .onAppear {
             // Initialize with pre-selected image if available
             if selectedImage == nil {
@@ -423,6 +453,13 @@ struct CameraView: View {
             // Small delay to ensure configuration is complete before starting
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 cameraManager.startSession()
+                
+                // Auto-start recording if enabled and showing camera
+                if showingCamera && SettingsManager.shared.automaticallyRecord && SettingsManager.shared.enableRecording {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        cameraManager.startRecording()
+                    }
+                }
             }
         }
         .onDisappear {
@@ -433,7 +470,7 @@ struct CameraView: View {
                 selectedImage: $selectedImage,
                 selectedVideoURL: $selectedVideoURL,
                 onImageSelected: { image, isFromHistory in
-                    print("🎬 CameraView: onImageSelected called with image=\(image != nil ? "image" : "nil"), isFromHistory=\(isFromHistory)")
+                    print("🎬 CameraView: onImageSelected called with image, isFromHistory=\(isFromHistory)")
                     
                     // Clear video selection when image is selected
                     print("🎬 CameraView: Clearing selectedVideoURL (was: \(selectedVideoURL?.absoluteString ?? "nil"))")
@@ -924,6 +961,212 @@ class DebugRoutePickerView: AVRoutePickerView {
     }
 }
 
+// MARK: - Settings View
+struct SettingsView: View {
+    @StateObject private var settings = SettingsManager.shared
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            // Section Header - Apple HIG Typography
+            HStack {
+                Text("Settings")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(.white)
+                Spacer()
+            }
+            
+            // Settings Groups with Apple HIG spacing
+            VStack(spacing: 0) {
+                // Recording Settings Group
+                VStack(spacing: 0) {
+                    SettingToggleRow(
+                        title: "Recording",
+                        isOn: $settings.enableRecording,
+                        action: { enabled in
+                            settings.updateEnableRecording(enabled)
+                        }
+                    )
+                    
+                    // Apple HIG separator
+                    Rectangle()
+                        .fill(Color.white.opacity(0.2))
+                        .frame(height: 0.5)
+                        .padding(.leading, 16)
+                    
+                    SettingToggleRow(
+                        title: "Auto Record",
+                        isOn: $settings.automaticallyRecord,
+                        isEnabled: settings.enableRecording,
+                        action: { enabled in
+                            settings.updateAutomaticallyRecord(enabled)
+                        }
+                    )
+                }
+            }
+            .background(Color.white.opacity(0.1))
+            .cornerRadius(12)
+        }
+    }
+    
+    private func triggerAirPlayScreen() {
+        // Create and present AirPlay route picker
+        DispatchQueue.main.async {
+            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+               let _ = windowScene.windows.first {
+                let routePickerView = AVRoutePickerView()
+                routePickerView.prioritizesVideoDevices = true
+                
+                // Programmatically trigger the route picker
+                for subview in routePickerView.subviews {
+                    if let button = subview as? UIButton {
+                        button.sendActions(for: .touchUpInside)
+                        break
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Setting Toggle Row
+struct SettingToggleRow: View {
+    let title: String
+    @Binding var isOn: Bool
+    var isEnabled: Bool = true
+    let action: (Bool) -> Void
+    
+    var body: some View {
+        HStack(spacing: 16) {
+            Text(title)
+                .font(.system(size: 17, weight: .regular)) // Apple HIG standard body text
+                .foregroundColor(isEnabled ? .white : .white.opacity(0.5))
+                .multilineTextAlignment(.leading)
+            
+            Spacer(minLength: 8)
+            
+            Toggle("", isOn: Binding(
+                get: { isOn },
+                set: { newValue in
+                    if isEnabled {
+                        isOn = newValue
+                        action(newValue)
+                    }
+                }
+            ))
+            .toggleStyle(SwitchToggleStyle(tint: .accentColor))
+            .disabled(!isEnabled)
+            .opacity(isEnabled ? 1.0 : 0.6)
+        }
+        .padding(.horizontal, 16) // Apple HIG standard horizontal padding
+        .padding(.vertical, 12)   // Apple HIG standard vertical padding for 44pt touch target
+        .frame(minHeight: 44)     // Apple HIG minimum touch target
+        .contentShape(Rectangle()) // Ensure entire row is tappable
+        .onTapGesture {
+            if isEnabled {
+                isOn.toggle()
+                action(isOn)
+            }
+        }
+    }
+}
+
+// MARK: - Media Toggle Overlay (for Image/Video Mode)
+struct MediaToggleOverlay: View {
+    let orientationMode: OrientationMode
+    let showingCamera: Bool
+    let selectedImage: UIImage?
+    let cameraManager: CameraManager
+    let onToggleCameraImage: () -> Void
+    
+    var body: some View {
+        // Simplified, always-visible layout
+        ZStack {
+            if orientationMode == .landscape {
+                // Landscape: Button on right side, bottom position (match CameraControlsView)
+                HStack {
+                    Spacer()
+                    
+                    VStack(spacing: 30) {
+                        Spacer()
+                        Spacer() // Extra spacer for camera switch button position
+                        Spacer() // Extra spacer for record button position
+                        
+                        // Position button at bottom right - same as camera mode
+                        mediaToggleButton
+                    }
+                    .padding(.trailing, 20) // Match CameraControlsView exactly
+                }
+            } else {
+                // Portrait: Button on bottom left (match CameraControlsView)
+                VStack {
+                    Spacer()
+                    
+                    HStack {
+                        // Media toggle button in bottom LEFT (same as camera mode)
+                        mediaToggleButton
+                        
+                        Spacer()
+                    }
+                    .padding(.horizontal, 20) // Match CameraControlsView exactly
+                    .padding(.bottom, 40) // Match CameraControlsView exactly
+                }
+            }
+        }
+        .onAppear {
+            print("🎬 MediaToggleOverlay appeared - orientationMode: \(orientationMode), showingCamera: \(showingCamera)")
+            print("🎬 MediaToggleOverlay - selectedImage: \(selectedImage != nil ? "present" : "nil")")
+            print("🎬 MediaToggleOverlay - cameraManager.isRecording: \(cameraManager.isRecording)")
+        }
+        .onDisappear {
+            print("🎬 MediaToggleOverlay disappeared")
+        }
+    }
+    
+    private var mediaToggleButton: some View {
+        Button(action: {
+            print("🎬 MediaToggleButton tapped! Switching back to camera mode")
+            onToggleCameraImage()
+        }) {
+            ZStack {
+                // White border ring (red if recording) - make it more visible for debugging
+                Circle()
+                    .fill(cameraManager.isRecording ? Color.red : Color.white)
+                    .frame(width: 100, height: 100) // Increased size for debugging
+                
+                // Background circle - make it fully opaque for better visibility
+                Circle()
+                    .fill(Color.black)
+                    .frame(width: 85, height: 85) // Increased size for debugging
+                
+                // Always show camera icon when in image/video mode (to switch back to camera)
+                Image(systemName: "video.fill")
+                    .font(.system(size: 30, weight: .bold)) // Larger and bolder
+                    .foregroundColor(.white)
+                
+                // Recording indicator dot
+                if cameraManager.isRecording {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 12, height: 12)
+                                .padding(.trailing, 8)
+                                .padding(.top, 8)
+                        }
+                        Spacer()
+                    }
+                }
+            }
+            .shadow(color: .white, radius: 5) // Add white shadow for visibility
+        }
+        .buttonStyle(.plain)
+        .onAppear {
+            print("🎬 MediaToggleButton appeared!")
+        }
+    }
+}
+
 // MARK: - AirPlay Button
 struct AirPlayButton: UIViewRepresentable {
     @State private var isAirPlayConnected = false
@@ -938,7 +1181,7 @@ struct AirPlayButton: UIViewRepresentable {
         
         // Create custom button appearance - match Go Live button styling
         let button = UIButton(type: .system)
-        button.setTitle("Connect to AirPlay", for: .normal)
+        button.setTitle("Connect to Apple TV", for: .normal)
         button.titleLabel?.font = UIFont.systemFont(ofSize: 17, weight: .semibold)
         button.setTitleColor(UIColor.white, for: .normal)
         button.backgroundColor = UIColor.systemBlue
@@ -1092,7 +1335,7 @@ struct AirPlayButton: UIViewRepresentable {
                     let isConnected = self.isAirPlayActive()
                     print("🎵 AirPlay: Route changed - isConnected: \(isConnected)")
                     button.backgroundColor = isConnected ? UIColor.systemGreen.withAlphaComponent(0.8) : UIColor.systemBlue
-                    button.setTitle(isConnected ? "AirPlay Connected" : "Connect to AirPlay", for: .normal)
+                    button.setTitle(isConnected ? "Connected to Apple TV" : "Connect to Apple TV", for: .normal)
                 }
             }
         }
@@ -1103,7 +1346,7 @@ struct AirPlayButton: UIViewRepresentable {
                 if let button = subview as? UIButton {
                     let isConnected = isAirPlayActive()
                     button.backgroundColor = isConnected ? UIColor.systemGreen.withAlphaComponent(0.8) : UIColor.systemBlue
-                    button.setTitle(isConnected ? "AirPlay Connected" : "Connect to AirPlay", for: .normal)
+                    button.setTitle(isConnected ? "Connected to Apple TV" : "Connect to Apple TV", for: .normal)
                     self.button = button
                     break
                 }
