@@ -59,18 +59,19 @@ struct ContentView: View {
                     showFullscreenImage = false
                     showCameraView = true
                 }, onBack: {
-                    // Back to main menu
-                    showFullscreenImage = false
-                    OrientationManager.shared.setOrientation(UIInterfaceOrientation.portrait)
+                    // Back to main menu - clean reset
+                    resetToMainMenu()
                 })
                 .preferredColorScheme(.dark)
             } else if showCameraView {
-                CameraView(orientationMode: selectedMode, preSelectedImage: preSelectedImage) {
-                    // Back button callback  
-                    showCameraView = false
-                    // Set back to portrait for main menu
-                    OrientationManager.shared.setOrientation(UIInterfaceOrientation.portrait)
-                }
+                CameraView(
+                    orientationMode: selectedMode, 
+                    preSelectedImage: preSelectedImage,
+                    onBack: {
+                        // Clean navigation back to main menu
+                        resetToMainMenu()
+                    }
+                )
                 .preferredColorScheme(.dark)
             } else {
                 MainMenuView(
@@ -105,6 +106,15 @@ struct ContentView: View {
                 }
             )
         }
+    }
+    
+    // Helper function to cleanly reset to main menu
+    private func resetToMainMenu() {
+        // Reset all states
+        showCameraView = false
+        showFullscreenImage = false
+        // Force portrait orientation for main menu
+        OrientationManager.shared.setOrientation(UIInterfaceOrientation.portrait)
     }
 }
 
@@ -346,7 +356,10 @@ struct CameraView: View {
                                     showingCamera = false
                                 }
                             },
-                            onBack: onBack,
+                            onBack: {
+                                // Clean exit - stop everything before navigating back
+                                cleanupAndExit()
+                            },
                             orientationMode: orientationMode
                         )
                         .ignoresSafeArea()
@@ -367,6 +380,12 @@ struct CameraView: View {
                             .foregroundColor(.white.opacity(0.8))
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 40)
+                        
+                        Button("Return to Main Menu") {
+                            cleanupAndExit()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .padding(.top, 20)
                     }
                 }
             } else {
@@ -386,7 +405,7 @@ struct CameraView: View {
                             .clipped()
                     }
                     
-                    // Simple toggle button overlay - ALWAYS show when not in camera mode
+                    // Simple toggle button overlay
                     SimpleCameraToggleButton(
                         orientationMode: orientationMode,
                         isRecording: cameraManager.isRecording,
@@ -397,15 +416,22 @@ struct CameraView: View {
                             }
                         }
                     )
+                    
+                    // Add exit button overlay for media view
+                    VStack {
+                        HStack {
+                            exitButton
+                                .padding(.leading, 20)
+                                .padding(.top, 50)
+                            Spacer()
+                        }
+                        Spacer()
+                    }
                 }
             }
             .onLongPressGesture(minimumDuration: 1.0) {
                 // Long press: Return to main menu
-                // Stop recording if currently recording before returning to main page
-                if cameraManager.isRecording {
-                    cameraManager.stopRecording()
-                }
-                onBack()
+                cleanupAndExit()
             }
             .gesture(
                 // Swipe up from bottom edge: Return to main menu
@@ -419,17 +445,14 @@ struct CameraView: View {
                         
                         // Swipe must start from bottom 100 points of screen and move up at least 50 points
                         if startY > screenHeight - 100 && swipeDistance > 50 {
-                            // Stop recording if currently recording before returning to main page
-                            if cameraManager.isRecording {
-                                cameraManager.stopRecording()
-                            }
-                            onBack()
+                            cleanupAndExit()
                         }
                     }
             )
         }
         .localCameraMode()
         .onAppear {
+            print("CameraView appeared")
             // Initialize with pre-selected image if available
             if selectedImage == nil {
                 selectedImage = preSelectedImage
@@ -453,6 +476,11 @@ struct CameraView: View {
             }
         }
         .onDisappear {
+            print("CameraView disappearing - cleaning up")
+            // Clean up when view disappears
+            if cameraManager.isRecording {
+                cameraManager.stopRecording()
+            }
             cameraManager.stopSession()
         }
         .sheet(isPresented: $showingImagePicker) {
@@ -497,6 +525,49 @@ struct CameraView: View {
                 }
             }
         }
+    }
+    
+    // Clean exit function to properly cleanup before navigating back
+    private func cleanupAndExit() {
+        print("Cleaning up and exiting to main menu")
+        
+        // Stop recording if active
+        if cameraManager.isRecording {
+            cameraManager.stopRecording()
+        }
+        
+        // Stop camera session
+        cameraManager.stopSession()
+        
+        // Small delay to ensure cleanup completes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            onBack()
+        }
+    }
+    
+    // Exit button for media view
+    private var exitButton: some View {
+        Button(action: {
+            cleanupAndExit()
+        }) {
+            ZStack {
+                // Background circle (grey)
+                Circle()
+                    .fill(Color.gray.opacity(0.8))
+                    .frame(width: 36, height: 36)
+                
+                // Border circle
+                Circle()
+                    .stroke(Color.gray, lineWidth: 1)
+                    .frame(width: 36, height: 36)
+                
+                // X icon
+                Image(systemName: "xmark")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.white)
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 
