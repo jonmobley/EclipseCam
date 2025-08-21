@@ -22,6 +22,7 @@ class CameraManager: NSObject, ObservableObject {
     
     // Camera control properties
     @Published var currentZoomScale: CGFloat = 1.0
+    private var isMacroModeAvailable = false
     
     private var videoDeviceInput: AVCaptureDeviceInput?
     private var audioDeviceInput: AVCaptureDeviceInput?
@@ -79,18 +80,10 @@ class CameraManager: NSObject, ObservableObject {
         // Remove existing inputs
         session.inputs.forEach { session.removeInput($0) }
         
-        // Configure session preset based on orientation
-        let preset: AVCaptureSession.Preset
-        switch orientationMode {
-        case .portrait:
-            preset = .hd1920x1080  // 1080p for portrait (will be rotated to 9:16)
-        case .landscape:
-            preset = .hd1920x1080  // 1080p for landscape (16:9)
-        }
-        
-        if session.canSetSessionPreset(preset) {
-            session.sessionPreset = preset
-            print("CameraManager: Session preset set to \(preset) for \(orientationMode)")
+        // Configure session preset for 1080p
+        if session.canSetSessionPreset(.hd1920x1080) {
+            session.sessionPreset = .hd1920x1080
+            print("CameraManager: Session preset set to 1080p for \(orientationMode)")
         } else if session.canSetSessionPreset(.high) {
             session.sessionPreset = .high
             print("CameraManager: Fallback to .high preset")
@@ -98,14 +91,18 @@ class CameraManager: NSObject, ObservableObject {
             print("CameraManager: Warning - Cannot set preferred session presets")
         }
         
-        // Add video input
-        guard let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: currentCameraPosition) else {
+        // Add video input with macro mode support
+        let videoDevice = selectBestCamera(for: currentCameraPosition)
+        guard let videoDevice = videoDevice else {
             print("CameraManager: Error - No camera device found for position: \(currentCameraPosition)")
             session.commitConfiguration()
             return
         }
         
         print("CameraManager: Found camera device: \(videoDevice.localizedName)")
+        
+        // Configure video device for 1080p 30fps and macro mode
+        configureVideoDevice(videoDevice)
         
         guard let videoDeviceInput = try? AVCaptureDeviceInput(device: videoDevice) else {
             print("CameraManager: Error - Failed to create video device input")
@@ -255,6 +252,41 @@ class CameraManager: NSObject, ObservableObject {
         if session.canAddOutput(movieOutput) {
             session.addOutput(movieOutput)
             self.movieOutput = movieOutput
+            
+            // Enable video stabilization on the connection
+            if let connection = movieOutput.connection(with: .video) {
+                if connection.isVideoStabilizationSupported {
+                    connection.preferredVideoStabilizationMode = .auto
+                    print("CameraManager: Enabled video stabilization")
+                }
+                
+                // Set video orientation based on current orientation mode
+                if #available(iOS 17.0, *) {
+                    let rotationAngle: CGFloat
+                    switch orientationMode {
+                    case .portrait:
+                        rotationAngle = 0
+                    case .landscape:
+                        rotationAngle = 90
+                    }
+                    if connection.isVideoRotationAngleSupported(rotationAngle) {
+                        connection.videoRotationAngle = rotationAngle
+                        print("CameraManager: Set video rotation angle to \(rotationAngle)°")
+                    }
+                } else {
+                    // Fallback for iOS 16 and earlier
+                    if connection.isVideoOrientationSupported {
+                        switch orientationMode {
+                        case .portrait:
+                            connection.videoOrientation = .portrait
+                        case .landscape:
+                            connection.videoOrientation = .landscapeRight
+                        }
+                        print("CameraManager: Set video orientation to \(orientationMode)")
+                    }
+                }
+            }
+            
             print("CameraManager: Successfully added movie output")
         } else {
             print("CameraManager: Error - Cannot add movie output to session")
@@ -334,6 +366,124 @@ class CameraManager: NSObject, ObservableObject {
     private func stopRecordingTimer() {
         recordingTimer?.invalidate()
         recordingTimer = nil
+    }
+    
+    // MARK: - Camera Selection and Configuration
+    
+    private func selectBestCamera(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {
+        // Try to get the best camera with macro support
+        if #available(iOS 15.0, *) {
+            // First try to get a camera with macro support (ultra wide with macro)
+            if let device = AVCaptureDevice.default(.builtInTripleCamera, for: .video, position: position) {
+                print("CameraManager: Using triple camera system")
+                checkMacroModeAvailability(for: device)
+                return device
+            }
+            
+            if let device = AVCaptureDevice.default(.builtInDualWideCamera, for: .video, position: position) {
+                print("CameraManager: Using dual wide camera system")
+                checkMacroModeAvailability(for: device)
+                return device
+            }
+        }
+        
+        // Fallback to standard wide angle camera
+        if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position) {
+            print("CameraManager: Using wide angle camera")
+            checkMacroModeAvailability(for: device)
+            return device
+        }
+        
+        return nil
+    }
+    
+    private func checkMacroModeAvailability(for device: AVCaptureDevice) {
+        if #available(iOS 15.0, *) {
+            let macroAvailable = device.constituentDevices.contains { constituentDevice in
+                constituentDevice.deviceType == .builtInUltraWideCamera && 
+                constituentDevice.position == device.position
+            }
+            
+            self.isMacroModeAvailable = macroAvailable
+            print("CameraManager: Macro mode available: \(macroAvailable)")
+        } else {
+            self.isMacroModeAvailable = false
+        }
+    }
+    
+    private func configureVideoDevice(_ device: AVCaptureDevice) {
+        do {
+            try device.lockForConfiguration()
+            
+            // Configure for 1080p 30fps
+            let format = findBest1080pFormat(for: device)
+            if let format = format {
+                device.activeFormat = format
+                print("CameraManager: Set video format to 1080p")
+                
+                // Set frame rate to 30fps
+                let frameRate = CMTimeMake(value: 1, timescale: 30)
+                device.activeVideoMinFrameDuration = frameRate
+                device.activeVideoMaxFrameDuration = frameRate
+                print("CameraManager: Set frame rate to 30fps")
+            }
+            
+            // Enable automatic macro mode if available (iOS 15.4+)
+            if #available(iOS 15.4, *) {
+                // Check if device supports macro mode through constituent devices
+                let hasUltraWide = device.constituentDevices.contains { constituentDevice in
+                    constituentDevice.deviceType == .builtInUltraWideCamera
+                }
+                if hasUltraWide {
+                    print("CameraManager: Device supports macro mode via ultra-wide camera")
+                    // Macro mode will be handled automatically by the system
+                }
+            }
+            
+            // Configure focus and exposure for best quality
+            if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
+            }
+            
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+            }
+            
+            // Enable image stabilization if available
+            if device.activeFormat.isVideoStabilizationModeSupported(.auto) {
+                // Note: Video stabilization is set on the connection, not the device
+                print("CameraManager: Video stabilization supported")
+            }
+            
+            device.unlockForConfiguration()
+            
+        } catch {
+            print("CameraManager: Failed to configure video device: \(error)")
+        }
+    }
+    
+    private func findBest1080pFormat(for device: AVCaptureDevice) -> AVCaptureDevice.Format? {
+        let formats = device.formats
+        
+        // Look for 1080p format with 30fps support
+        for format in formats {
+            let description = format.formatDescription
+            let dimensions = CMVideoFormatDescriptionGetDimensions(description)
+            
+            // Check if this is 1080p (1920x1080)
+            if dimensions.width == 1920 && dimensions.height == 1080 {
+                // Check if it supports 30fps
+                for range in format.videoSupportedFrameRateRanges {
+                    if range.minFrameRate <= 30 && range.maxFrameRate >= 30 {
+                        print("CameraManager: Found 1080p 30fps format")
+                        return format
+                    }
+                }
+            }
+        }
+        
+        print("CameraManager: No specific 1080p 30fps format found, using default")
+        return nil
     }
     
     // MARK: - Camera Control Methods
